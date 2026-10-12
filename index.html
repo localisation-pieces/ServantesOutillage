@@ -633,7 +633,8 @@ const MVT_TYPES = {
   echange:{label:"Échangé", color:"amber"},
   plus_necessaire:{label:"Plus nécessaire", color:"gray"},
   remplacement:{label:"Remplacement", color:"green"},
-  manquant:{label:"Manquant", color:"red"}
+  manquant:{label:"Manquant", color:"red"},
+  en_trop:{label:"Outil en trop", color:"amber"}
 };
 const RESULTATS_INVENTAIRE = ["Conforme","Manquant","Cassé","Usé"];
 
@@ -1068,7 +1069,7 @@ function computePendingValidationCount(){
     const sid = myServanteId();
     if(sid){
       count += mouvementsAllCache.filter(m => m.servanteId===sid && !m.valideParAgent).length;
-      count += inventairesAllCache.filter(i => i.servanteId===sid && !i.valideParAgent).length;
+      count += inventairesAllCache.filter(i => i.servanteId===sid && !i.valideParAgent && !i.brouillon).length;
     }
   }
   return count;
@@ -2581,7 +2582,7 @@ function renderDashboardGlobal(main){
   const garageMap = {};
   servantesCache.forEach(s=>{ garageMap[s.id] = s.garage || 'Non renseigné'; });
   const ecartsParGarage = {};
-  inventairesAllCache.forEach(inv=>{
+  inventairesAllCache.filter(inv=>!inv.brouillon).forEach(inv=>{
     const g = garageMap[inv.servanteId] || inv.garage || 'Non renseigné';
     const nb = (inv.resultats||[]).filter(r=>r.resultat!=='Conforme').length;
     if(nb>0) ecartsParGarage[g] = (ecartsParGarage[g]||0) + nb;
@@ -2668,7 +2669,7 @@ function renderDashboardAgent(main){
     else if(t.etat==='Manquant') manquants++;
   });
   const mesEnAttente = mouvementsAllCache.filter(m=>m.servanteId===s.id && !m.valideParAgent).length
-                      + inventairesAllCache.filter(i=>i.servanteId===s.id && !i.valideParAgent).length;
+                      + inventairesAllCache.filter(i=>i.servanteId===s.id && !i.valideParAgent && !i.brouillon).length;
   const due = getNextInventoryDue(s);
   const status = inventoryStatus(due.date);
 
@@ -2711,7 +2712,7 @@ function renderServantesView(){
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>Agent</th><th>Matricule</th><th>Garage</th><th>Outils</th><th>Cassés</th><th>Usés</th><th>Prochain inventaire</th><th></th>
+            <th>Agent</th><th>N° servante</th><th>Garage</th><th>Outils</th><th>Cassés</th><th>Usés</th><th>Prochain inventaire</th><th></th>
           </tr></thead>
           <tbody id="servantes-tbody"></tbody>
         </table>
@@ -2966,14 +2967,14 @@ function renderServanteDetail(servanteId){
     <div class="page-head">
       <div>
         <h2>${disponible ? 'Servante disponible' : escapeHtml(s.agentNom)}</h2>
-        <p class="sub mono">${disponible ? 'Non attribuée' : escapeHtml(s.agentMatricule)} · ${escapeHtml(s.garage||'')} · créée le ${formatDate(s.dateCreation)}${s.dernierInventaire ? ' · dernier inventaire le '+formatDate(s.dernierInventaire.date) : ''}</p>
+        <p class="sub mono">${disponible ? 'Non attribuée' : `<b>Servante n° ${escapeHtml(s.agentMatricule)}</b>`} · ${escapeHtml(s.garage||'')} · créée le ${formatDate(s.dateCreation)}${s.dernierInventaire ? ' · dernier inventaire le '+formatDate(s.dernierInventaire.date) : ''}</p>
         <div style="margin-top:8px;">${inventoryStatusPill(s)}</div>
       </div>
       <div class="page-head-actions">
         ${canReaffecter && !disponible ? `<button class="btn btn-secondary" id="btn-liberer-servante">Retirer à l'agent</button>` : ''}
         ${canReaffecter && disponible ? `<button class="btn btn-primary" id="btn-reattribuer-servante">Attribuer à un agent</button>` : ''}
         ${canProgrammer ? `<button class="btn btn-secondary" id="btn-programmer-inv">Programmer un inventaire</button>` : ''}
-        ${canInventaire ? `<button class="btn btn-secondary" id="btn-new-inventaire">+ Nouvel inventaire</button>` : ''}
+        ${canInventaire ? `<button class="btn ${findDraftInventaire(servanteId) ? 'btn-primary' : 'btn-secondary'}" id="btn-new-inventaire">${findDraftInventaire(servanteId) ? '📝 Reprendre l\'inventaire en cours' : '+ Nouvel inventaire'}</button>` : ''}
         ${canAttribuer ? `<button class="btn btn-primary" id="btn-add-tool">+ Attribuer un outil</button>` : ''}
       </div>
     </div>
@@ -3194,17 +3195,32 @@ async function loadInventaires(servanteId){
   try{
     const q = query(collection(db,'inventaires'), where('servanteId','==',servanteId));
     const snap = await getDocs(q);
-    let all = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    const everything = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    const drafts = everything.filter(inv => inv.brouillon === true);
+    let all = everything.filter(inv => !inv.brouillon);
     all.sort((a,b)=> new Date(b.dateInventaire) - new Date(a.dateInventaire));
     let list = all.filter(inv => !(inv.valideParAgent && inv.valideParAdmin));
+    const draftsHtml = drafts.map(d => {
+      const tot = (d.resultats||[]).length, done = (d.resultats||[]).filter(r=>r.resultat).length;
+      return `<div style="border-bottom:1px solid var(--line);padding:14px 16px;background:var(--amber-pale);">
+        <div style="font-weight:700;">📝 Inventaire en cours — ${done} / ${tot} outils pointés</div>
+        <div style="font-size:12px;color:var(--steel);">Commencé le ${formatDate(d.debutLe || d.dateInventaire)} par ${escapeHtml(d.realiseParNom||'')}</div>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-primary btn-sm" data-resume-inv="${d.id}">Reprendre l'inventaire</button>
+        </div>
+      </div>`;
+    }).join('');
     const validesCount = all.length - list.length;
     const journalLink = `<div style="padding:12px 16px;${list.length?'border-top:1px solid var(--line);':''}"><button class="btn btn-secondary btn-sm" id="inv-journal-link">Voir l'historique complet dans le Journal${validesCount?` (${validesCount} validé${validesCount>1?'s':''})`:''}</button></div>`;
     if(!list.length){
-      panel.innerHTML = `<div class="empty-state"><p>Aucun inventaire en attente.</p></div>${journalLink}`;
+      panel.innerHTML = draftsHtml + (drafts.length ? '' : `<div class="empty-state"><p>Aucun inventaire en attente.</p></div>`) + journalLink;
+      panel.querySelectorAll('[data-resume-inv]').forEach(b=>{
+        b.addEventListener('click', ()=>{ const d = drafts.find(x=>x.id===b.dataset.resumeInv); if(d) openInventaireEditor(servanteId, d.id, d); });
+      });
       bindJournalLink('inv-journal-link', s);
       return;
     }
-    panel.innerHTML = list.map((inv) => {
+    panel.innerHTML = draftsHtml + list.map((inv) => {
       const allIdx = all.findIndex(x=>x.id===inv.id);
       const prev = all[allIdx+1];
       const ecarts = (inv.resultats||[]).filter(r=>r.resultat!=='Conforme');
@@ -3230,8 +3246,9 @@ async function loadInventaires(servanteId){
         </div>
         ${ecarts.length ? `
           <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;">
-            ${ecarts.map(e=>`<span class="pill ${e.resultat==='Cassé'||e.resultat==='Manquant'?'pill-red':'pill-amber'}">${escapeHtml(e.designation)} — ${escapeHtml(e.resultat)}</span>`).join('')}
+            ${ecarts.map(e=>`<span class="pill ${e.resultat==='Cassé'||e.resultat==='Manquant'?'pill-red':'pill-amber'}" title="${escapeHtml(e.commentaire||'')}">${escapeHtml(e.designation)} — ${escapeHtml(e.resultat)}${e.commentaire ? ' : ' + escapeHtml(e.commentaire) : ''}${e.photoUrl ? ' 📷' : ''}</span>`).join('')}
           </div>` : `<div style="margin-top:8px;font-size:12.5px;color:var(--steel);">Tous les outils étaient conformes.</div>`}
+        ${(inv.enTrop||[]).length ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">${inv.enTrop.map(e=>`<span class="pill pill-amber">En trop : ${escapeHtml(e.designation)}${e.commentaire ? ' — ' + escapeHtml(e.commentaire) : ''}</span>`).join('')}</div>` : ''}
         ${comparisonLines.length ? `
           <div style="margin-top:10px;font-size:12px;color:var(--steel);">
             <b style="text-transform:uppercase;letter-spacing:0.04em;font-size:10.5px;">Depuis l'inventaire précédent :</b><br>
@@ -3242,6 +3259,9 @@ async function loadInventaires(servanteId){
         </div>
       </div>`;
     }).join('') + journalLink;
+    panel.querySelectorAll('[data-resume-inv]').forEach(b=>{
+      b.addEventListener('click', ()=>{ const d = drafts.find(x=>x.id===b.dataset.resumeInv); if(d) openInventaireEditor(servanteId, d.id, d); });
+    });
     panel.querySelectorAll('[data-validate-inv-agent]').forEach(b=>{
       b.addEventListener('click', ()=>validerInventaireAgent(b.dataset.validateInvAgent, servanteId));
     });
@@ -3571,7 +3591,7 @@ async function loadHtml5Qrcode(){
   return window.Html5Qrcode;
 }
 
-function openScanModal(onResult){
+function openScanModal(onResult, onCancel){
   openModal(`
     <div class="modal-head"><h3>Scanner un code</h3><button class="modal-close" id="scan-close">&times;</button></div>
     <div class="modal-error" id="scan-error"></div>
@@ -3588,8 +3608,8 @@ function openScanModal(onResult){
     }
     closeModal();
   }
-  document.getElementById('scan-close').addEventListener('click', stopAndClose);
-  document.getElementById('scan-cancel').addEventListener('click', stopAndClose);
+  document.getElementById('scan-close').addEventListener('click', ()=>stopAndClose().then(()=>{ if(onCancel) onCancel(); }));
+  document.getElementById('scan-cancel').addEventListener('click', ()=>stopAndClose().then(()=>{ if(onCancel) onCancel(); }));
 
   loadHtml5Qrcode().then(Html5Qrcode => {
     _activeScanner = new Html5Qrcode("qr-reader");
@@ -3617,9 +3637,24 @@ function openScanModal(onResult){
   });
 }
 
+async function fetchImageAsDataUrl(url){
+  try{
+    const small = url.includes('/upload/') ? url.replace('/upload/', '/upload/w_700,q_70/') : url;
+    const res = await fetch(small);
+    if(!res.ok) return null;
+    const blob = await res.blob();
+    return await new Promise((resolve)=>{
+      const fr = new FileReader();
+      fr.onload = ()=>resolve(fr.result);
+      fr.onerror = ()=>resolve(null);
+      fr.readAsDataURL(blob);
+    });
+  }catch(e){ return null; }
+}
+
 async function downloadInventairePDF(inventaireId, servanteId){
   try{
-    const s = servantesCache.find(x=>x.id===servanteId);
+    const s = servantesCache.find(x=>x.id===servanteId) || {};
     const invSnap = await getDoc(doc(db,'inventaires',inventaireId));
     if(!invSnap.exists()) return;
     const inv = invSnap.data();
@@ -3632,6 +3667,9 @@ async function downloadInventairePDF(inventaireId, servanteId){
     const green = [0,166,81];
     const charcoal = [32,36,42];
     const steel = [91,101,112];
+    const numero = s.agentMatricule || inv.numeroServante || inv.agentMatricule || '—';
+    const resultats = inv.resultats || [];
+    const enTrop = inv.enTrop || [];
 
     /* Bandeau d'en-tête */
     pdf.setFillColor(...charcoal);
@@ -3644,22 +3682,24 @@ async function downloadInventairePDF(inventaireId, servanteId){
     pdf.text("FICHE D'INVENTAIRE", margin, 13);
     pdf.setFontSize(8.5);
     pdf.setFont(undefined, 'normal');
-    pdf.text("Servante d'outillage — Gestion d'atelier", margin, 19);
+    pdf.text(`Servante d'outillage n° ${numero} — Gestion d'atelier`, margin, 19);
     pdf.setFontSize(7.5);
     pdf.text(formatDate(nowIso()).split(' à ')[0], pageW - margin, 19, { align: 'right' });
 
-    /* Bloc informations */
+    /* Bloc informations (6 cases) */
     let y = 34;
-    const boxH = 26;
+    const boxH = 38;
     const colW = contentW / 2;
     pdf.setDrawColor(220,220,220);
     pdf.setFillColor(250,251,250);
     pdf.roundedRect(margin, y, contentW, boxH, 2, 2, 'FD');
     const infoRows = [
-      ["Agent", `${s.agentNom || 'Non attribuée'}${s.agentMatricule ? ' ('+s.agentMatricule+')' : ''}`],
-      ["Garage", s.garage || '—'],
+      ["Servante n°", String(numero)],
+      ["Agent", `${s.agentNom || inv.agentNom || 'Non attribuée'}${(s.agentMatricule||inv.agentMatricule) ? ' ('+(s.agentMatricule||inv.agentMatricule)+')' : ''}`],
+      ["Garage", s.garage || inv.garage || '—'],
       ["Date de l'inventaire", formatDate(inv.dateInventaire).split(' à ')[0]],
-      ["Réalisé par", inv.realiseParNom]
+      ["Réalisé par", inv.realiseParNom || '—'],
+      ["Début / fin", `${inv.debutLe ? formatDate(inv.debutLe) : '-'} au ${inv.termineLe ? formatDate(inv.termineLe) : '-'}`]
     ];
     infoRows.forEach((row, idx) => {
       const colX = margin + 6 + (idx % 2) * colW;
@@ -3670,30 +3710,33 @@ async function downloadInventairePDF(inventaireId, servanteId){
       pdf.setFontSize(9.5);
       pdf.setTextColor(...charcoal);
       pdf.setFont(undefined, 'bold');
-      const valLine = pdf.splitTextToSize(String(row[1]), colW - 10)[0];
-      pdf.text(valLine, colX, rowY + 5);
+      pdf.text(pdf.splitTextToSize(String(row[1]), colW - 10)[0], colX, rowY + 5);
       pdf.setFont(undefined, 'normal');
     });
-    y += boxH + 8;
+    y += boxH + 6;
 
-    /* Tableau des outils — largeurs fixes pour ne jamais dépasser la page */
-    const rows = (inv.resultats||[]).map(r => [r.reference, r.designation, r.categorie||'—', r.resultat]);
+    /* Synthèse */
+    const cnt = (v) => resultats.filter(r=>r.resultat===v).length;
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(...charcoal);
+    pdf.setFont(undefined, 'bold');
+    const pl = (n, one, many) => `${n} ${n>1 ? many : one}`;
+    pdf.text(`${pl(resultats.length,'outil pointé','outils pointés')} — ${pl(cnt('Conforme'),'conforme','conformes')} · ${pl(cnt('Manquant'),'manquant','manquants')} · ${pl(cnt('Cassé'),'cassé','cassés')} · ${pl(cnt('Usé'),'usé','usés')} · ${enTrop.length} en trop`, margin, y);
+    pdf.setFont(undefined, 'normal');
+    y += 5;
+
+    /* Tableau des outils */
     pdf.autoTable({
       startY: y,
       margin: { left: margin, right: margin },
       tableWidth: contentW,
-      head: [["Référence", "Désignation", "Catégorie", "Résultat"]],
-      body: rows,
+      head: [["Référence", "Désignation", "Catégorie", "Résultat", "Commentaire"]],
+      body: resultats.map(r => [r.reference, r.designation, r.categorie||'—', r.resultat || '—', (r.commentaire || '') + (r.photoUrl ? '  [photo en annexe]' : '')]),
       theme: 'grid',
-      styles: { fontSize: 8.5, cellPadding: 3, lineColor: [225,228,225], lineWidth: 0.2, overflow: 'linebreak', valign: 'middle' },
-      headStyles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 8.5 },
+      styles: { fontSize: 8, cellPadding: 2.4, lineColor: [225,228,225], lineWidth: 0.2, overflow: 'linebreak', valign: 'middle' },
+      headStyles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 8 },
       alternateRowStyles: { fillColor: [248,249,248] },
-      columnStyles: {
-        0: { cellWidth: 34 },
-        1: { cellWidth: 'auto' },
-        2: { cellWidth: 32 },
-        3: { cellWidth: 24, fontStyle: 'bold', halign: 'center' }
-      },
+      columnStyles: { 0:{cellWidth:26}, 1:{cellWidth:'auto'}, 2:{cellWidth:24}, 3:{cellWidth:20, fontStyle:'bold', halign:'center'}, 4:{cellWidth:48} },
       didParseCell: (data) => {
         if(data.section === 'body' && data.column.index === 3){
           const val = data.cell.raw;
@@ -3703,28 +3746,36 @@ async function downloadInventairePDF(inventaireId, servanteId){
         }
       }
     });
-
     let finalY = pdf.lastAutoTable.finalY + 8;
-    const ecarts = (inv.resultats||[]).filter(r=>r.resultat!=='Conforme');
-    if(finalY > pageH - 45){ pdf.addPage(); finalY = 20; }
 
-    /* Résumé écarts */
-    pdf.setFontSize(9.5);
-    pdf.setTextColor(...charcoal);
-    pdf.setFont(undefined, 'bold');
-    pdf.text(`Écarts constatés : ${ecarts.length}`, margin, finalY);
-    pdf.setFont(undefined, 'normal');
-    finalY += 8;
+    /* Outils en trop */
+    if(enTrop.length){
+      if(finalY > pageH - 50){ pdf.addPage(); finalY = 20; }
+      pdf.setFontSize(10); pdf.setFont(undefined, 'bold'); pdf.setTextColor(...charcoal);
+      pdf.text(`Outils en trop trouvés dans la servante (${enTrop.length})`, margin, finalY);
+      pdf.setFont(undefined, 'normal');
+      pdf.autoTable({
+        startY: finalY + 3,
+        margin: { left: margin, right: margin },
+        tableWidth: contentW,
+        head: [["Désignation", "Référence", "Commentaire"]],
+        body: enTrop.map(e => [e.designation, e.reference || '—', (e.commentaire||'') + (e.photoUrl ? '  [photo en annexe]' : '')]),
+        theme: 'grid',
+        styles: { fontSize: 8, cellPadding: 2.4, lineColor: [225,228,225], lineWidth: 0.2, overflow: 'linebreak' },
+        headStyles: { fillColor: [143,100,18], textColor: 255, fontStyle: 'bold', fontSize: 8 }
+      });
+      finalY = pdf.lastAutoTable.finalY + 8;
+    }
 
-    /* Bloc validation — hauteur dynamique selon le contenu, jamais de débordement */
+    /* Bloc validation */
     const fullyValidated = inv.valideParAgent && inv.valideParAdmin;
     const boxColor = fullyValidated ? green : [214,69,69];
     const validationLines = [];
     if(fullyValidated){
-      validationLines.push({ text:`✓ Validé par l'agent : ${inv.valideParAgentNom} (le ${formatDate(inv.valideParAgentLe).split(' à ')[0]})`, bold:true });
-      validationLines.push({ text:`✓ Approuvé par l'administrateur : ${inv.valideParAdminNom} (le ${formatDate(inv.valideParAdminLe).split(' à ')[0]})`, bold:true });
+      validationLines.push({ text:`Validé par l'agent : ${inv.valideParAgentNom} (le ${formatDate(inv.valideParAgentLe).split(' à ')[0]})`, bold:true });
+      validationLines.push({ text:`Approuvé par l'administrateur : ${inv.valideParAdminNom} (le ${formatDate(inv.valideParAdminLe).split(' à ')[0]})`, bold:true });
     } else if(inv.valideParAgent){
-      validationLines.push({ text:`✓ Validé par l'agent : ${inv.valideParAgentNom} (le ${formatDate(inv.valideParAgentLe).split(' à ')[0]})`, bold:true });
+      validationLines.push({ text:`Validé par l'agent : ${inv.valideParAgentNom} (le ${formatDate(inv.valideParAgentLe).split(' à ')[0]})`, bold:true });
       validationLines.push({ text:`En attente d'approbation par l'administrateur`, bold:false });
     } else {
       validationLines.push({ text:`En attente de validation par l'agent`, bold:false });
@@ -3738,23 +3789,83 @@ async function downloadInventairePDF(inventaireId, servanteId){
     pdf.setTextColor(...(fullyValidated ? [0,134,63] : [214,69,69]));
     validationLines.forEach((line, i) => {
       pdf.setFont(undefined, line.bold ? 'bold' : 'normal');
-      const wrapped = pdf.splitTextToSize(line.text, contentW - 12)[0];
-      pdf.text(wrapped, margin + 6, finalY + 8 + i*7);
+      pdf.text(pdf.splitTextToSize(line.text, contentW - 12)[0], margin + 6, finalY + 8 + i*7);
+    });
+    finalY += valBoxH + 8;
+
+    /* Cases de signature (à imprimer et signer) */
+    const sigH = 40;
+    if(finalY + sigH + 8 > pageH - 14){ pdf.addPage(); finalY = 20; }
+    const sigW = (contentW - 8) / 3;
+    const sigs = [
+      ["Agent (propriétaire de la servante)", inv.valideParAgentNom || s.agentNom || ''],
+      ["Réalisé par", inv.cloturePar || inv.realiseParNom || ''],
+      ["Administrateur / Responsable", inv.valideParAdminNom || '']
+    ];
+    sigs.forEach((sg, i) => {
+      const x = margin + i * (sigW + 4);
+      pdf.setDrawColor(150,150,150);
+      pdf.setFillColor(255,255,255);
+      pdf.roundedRect(x, finalY, sigW, sigH, 2, 2, 'D');
+      pdf.setFontSize(7); pdf.setTextColor(...steel); pdf.setFont(undefined, 'bold');
+      pdf.text(sg[0].toUpperCase(), x + 3, finalY + 5, { maxWidth: sigW - 6 });
+      pdf.setFont(undefined, 'normal'); pdf.setFontSize(8.5); pdf.setTextColor(...charcoal);
+      pdf.text(`Nom : ${sg[1]}`, x + 3, finalY + 13, { maxWidth: sigW - 6 });
+      pdf.text('Date : ____ / ____ / ________', x + 3, finalY + 20);
+      pdf.setFontSize(7); pdf.setTextColor(...steel);
+      pdf.text('Signature :', x + 3, finalY + 27);
     });
 
-    pdf.setFont(undefined, 'normal');
-    pdf.setTextColor(...steel);
-    pdf.setFontSize(7);
-    pdf.text(`Document généré le ${formatDate(nowIso()).split(' à ')[0]}`, margin, pageH - 10);
+    /* Annexe photos */
+    const photos = [];
+    resultats.forEach(r => { if(r.photoUrl) photos.push({ url:r.photoUrl, legend:`${r.designation} (${r.reference}) — ${r.resultat}${r.commentaire ? ' : ' + r.commentaire : ''}` }); });
+    enTrop.forEach(e => { if(e.photoUrl) photos.push({ url:e.photoUrl, legend:`Outil en trop : ${e.designation}${e.commentaire ? ' — ' + e.commentaire : ''}` }); });
+    if(photos.length){
+      pdf.addPage();
+      let py = 20;
+      pdf.setFontSize(12); pdf.setFont(undefined, 'bold'); pdf.setTextColor(...charcoal);
+      pdf.text('Annexe — photos jointes', margin, py);
+      pdf.setFont(undefined, 'normal');
+      py += 8;
+      for(const p of photos){
+        const data = await fetchImageAsDataUrl(p.url);
+        if(py + 62 > pageH - 14){ pdf.addPage(); py = 20; }
+        if(data){
+          try{ pdf.addImage(data, 'JPEG', margin, py, 62, 46); }catch(e){}
+        }
+        pdf.setFontSize(9); pdf.setTextColor(...charcoal);
+        pdf.text(pdf.splitTextToSize(p.legend, contentW - 70), margin + 68, py + 6);
+        py += 54;
+      }
+    }
 
-    pdf.save(`inventaire_${s.agentMatricule}_${inv.dateInventaire.slice(0,10)}.pdf`);
+    /* Pied de page */
+    const pages = pdf.internal.getNumberOfPages();
+    for(let i=1; i<=pages; i++){
+      pdf.setPage(i);
+      pdf.setFont(undefined, 'normal');
+      pdf.setTextColor(...steel);
+      pdf.setFontSize(7);
+      pdf.text(`Servante n° ${numero} — document généré le ${formatDate(nowIso()).split(' à ')[0]}`, margin, pageH - 8);
+      pdf.text(`Page ${i} / ${pages}`, pageW - margin, pageH - 8, { align: 'right' });
+    }
+
+    pdf.save(`inventaire_servante_${numero}_${String(inv.dateInventaire).slice(0,10)}.pdf`);
   }catch(err){
     showToast("Erreur lors de la génération du PDF : " + err.message, 'error');
   }
 }
 
+/* ============ INVENTAIRE : brouillon, preuves, outils en trop ============ */
+function findDraftInventaire(servanteId){
+  return inventairesAllCache.find(i => i.servanteId === servanteId && i.brouillon === true) || null;
+}
+
 function openInventaireModal(servanteId){
   const s = servantesCache.find(x=>x.id===servanteId);
+  if(!s) return;
+  const draft = findDraftInventaire(servanteId);
+  if(draft){ openInventaireEditor(servanteId, draft.id, draft); return; }
   const outils = (s.outilsAssignes||[]).filter(t=>t.actif);
   if(!outils.length){
     openModal(`
@@ -3766,52 +3877,381 @@ function openInventaireModal(servanteId){
     document.getElementById('m-cancel').addEventListener('click', closeModal);
     return;
   }
+  const data = {
+    servanteId, numeroServante: s.agentMatricule || null,
+    agentMatricule: s.agentMatricule || null, agentNom: s.agentNom || null, garage: s.garage || null,
+    brouillon: true, debutLe: nowIso(), dateInventaire: nowIso(),
+    realiseParMatricule: currentUser.matricule, realiseParNom: `${currentUser.prenom} ${currentUser.nom}`,
+    resultats: outils.map(t => ({
+      localId: t.localId, outilId: t.outilId, reference: t.reference, designation: t.designation,
+      categorie: t.categorie || '', resultat: null, commentaire: '', photoUrl: ''
+    })),
+    enTrop: [],
+    valideParAgent:false, valideParAgentMatricule:null, valideParAgentNom:null, valideParAgentLe:null,
+    valideParAdmin:false, valideParAdminMatricule:null, valideParAdminNom:null, valideParAdminLe:null
+  };
+  addDoc(collection(db,'inventaires'), data)
+    .then(ref => openInventaireEditor(servanteId, ref.id, data))
+    .catch(err => showToast("Impossible de démarrer l'inventaire : " + err.message, 'error'));
+}
+
+function openInventaireEditor(servanteId, invId, invData, opts){
+  opts = opts || {};
+  const s = servantesCache.find(x=>x.id===servanteId);
+  const state = {
+    resultats: (invData.resultats||[]).map(r => ({ commentaire:'', photoUrl:'', ...r, resultat: r.resultat || null })),
+    enTrop: (invData.enTrop||[]).map(e => ({ ...e }))
+  };
+  const RES = [
+    { v:'Conforme', cls:'ok',  ico:'✓' },
+    { v:'Manquant', cls:'bad', ico:'✕' },
+    { v:'Cassé',    cls:'bad', ico:'⚠' },
+    { v:'Usé',      cls:'warn',ico:'~' }
+  ];
+  let saveTimer = null;
+  let photoTarget = null;
+  let activeFilter = 'all';
+  const numero = (s && s.agentMatricule) || invData.numeroServante || '—';
+
+  const rowHtml = (r) => `
+    <div class="inv-row" data-row="${r.localId}">
+      <div class="inv-row-top">
+        <div class="inv-meta">
+          <div class="inv-desig">${escapeHtml(r.designation)}</div>
+          <div class="inv-ref">${escapeHtml(r.reference)}${r.categorie ? ' · ' + escapeHtml(r.categorie) : ''}</div>
+        </div>
+        <div class="inv-btns">
+          ${RES.map(x => `<button type="button" class="inv-btn inv-${x.cls}" data-set="${x.v}" data-for="${r.localId}">${x.ico} ${x.v}</button>`).join('')}
+        </div>
+      </div>
+      <div class="inv-extra" data-extra="${r.localId}" style="display:none;">
+        <textarea rows="2" data-comment="${r.localId}" placeholder="Explication de l'écart (obligatoire) : où, quand, pourquoi…"></textarea>
+        <div class="inv-photo-line">
+          <button type="button" class="btn btn-secondary btn-sm" data-photo="${r.localId}">📷 Ajouter une photo</button>
+          <span data-photo-state="${r.localId}"></span>
+        </div>
+      </div>
+    </div>`;
+
   openModal(`
-    <div class="modal-head"><h3>Nouvel inventaire — ${escapeHtml(s.agentNom)}</h3><button class="modal-close" id="m-close">&times;</button></div>
-    <div class="modal-error" id="inv-modal-error"></div>
-    <form id="inventaire-form">
-      <p style="font-size:12.5px;color:var(--steel);margin-bottom:12px;">Pointez le résultat de chaque outil. Par défaut : Conforme.</p>
-      <div style="max-height:400px;overflow-y:auto;">
-        ${outils.map(t => `
-          <div class="tool-row" style="padding:10px 4px;">
-            <div class="meta">
-              <div class="desig">${escapeHtml(t.designation)}</div>
-              <div class="ref">${escapeHtml(t.reference)}</div>
-            </div>
-            <select data-inv-result="${t.localId}" style="padding:7px 10px;border:1.5px solid var(--line);border-radius:7px;font-size:12.5px;">
-              ${RESULTATS_INVENTAIRE.map(r=>`<option value="${r}">${r}</option>`).join('')}
-            </select>
-          </div>
-        `).join('')}
+    <style>
+      .inv-head-sub{font-size:12.5px;color:var(--steel);margin:-6px 0 10px;}
+      .inv-bar{height:8px;background:var(--line);border-radius:6px;overflow:hidden;margin:6px 0 4px;}
+      .inv-bar>div{height:100%;background:var(--green);width:0;transition:width .2s;}
+      .inv-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0;}
+      .inv-toolbar input[type=search]{flex:1;min-width:160px;padding:9px 12px;border:1.5px solid var(--line);border-radius:8px;font-size:14px;}
+      .inv-chip{padding:7px 12px;border:1.5px solid var(--line);border-radius:18px;background:#fff;font-size:12.5px;cursor:pointer;}
+      .inv-chip.on{background:var(--charcoal);color:#fff;border-color:var(--charcoal);}
+      .inv-list{max-height:52vh;overflow-y:auto;border:1px solid var(--line);border-radius:10px;}
+      .inv-row{padding:10px 12px;border-bottom:1px solid var(--line);}
+      .inv-row:last-child{border-bottom:0;}
+      .inv-row.flash{background:#fff8d6;}
+      .inv-row-top{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;}
+      .inv-meta{min-width:180px;flex:1;}
+      .inv-desig{font-weight:700;font-size:14px;}
+      .inv-ref{font-size:12px;color:var(--steel);font-family:var(--mono,monospace);}
+      .inv-btns{display:flex;flex-wrap:wrap;gap:6px;}
+      .inv-btn{padding:9px 12px;border:1.5px solid var(--line);border-radius:8px;background:#fff;font-size:13px;font-weight:600;cursor:pointer;min-height:40px;}
+      .inv-btn.sel.inv-ok{background:#00a651;border-color:#00a651;color:#fff;}
+      .inv-btn.sel.inv-bad{background:#d64545;border-color:#d64545;color:#fff;}
+      .inv-btn.sel.inv-warn{background:#c58a12;border-color:#c58a12;color:#fff;}
+      .inv-extra textarea{width:100%;margin-top:8px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;font-size:13.5px;font-family:inherit;}
+      .inv-extra textarea.err{border-color:#d64545;background:#fff4f4;}
+      .inv-photo-line{display:flex;gap:10px;align-items:center;margin-top:6px;font-size:12.5px;color:var(--steel);}
+      .inv-thumb{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid var(--line);}
+      .inv-section{margin-top:16px;}
+      .inv-trop{border:1px dashed var(--amber);background:var(--amber-pale);border-radius:10px;padding:10px 12px;margin-top:8px;}
+      .inv-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-top:14px;}
+      .inv-state{font-size:12px;color:var(--steel);}
+      .inv-confirm{margin-top:12px;border:2px solid var(--charcoal);border-radius:10px;padding:12px 14px;}
+    </style>
+    <div class="modal-head"><h3>Inventaire — Servante n° ${escapeHtml(numero)}</h3><button class="modal-close" id="m-close">&times;</button></div>
+    <div class="inv-head-sub">${escapeHtml(s ? (s.agentNom || 'Servante disponible') : '')} · ${escapeHtml(s ? (s.garage||'') : '')} · commencé le ${formatDate(invData.debutLe || invData.dateInventaire)} par ${escapeHtml(invData.realiseParNom || '')}</div>
+    <div class="modal-error" id="inv-error"></div>
+    <div><b id="inv-count">0 / 0</b> outils pointés <span id="inv-ecarts" style="margin-left:8px;color:var(--steel);"></span></div>
+    <div class="inv-bar"><div id="inv-bar-fill"></div></div>
+
+    <div class="inv-toolbar">
+      <input type="search" id="inv-search" placeholder="Rechercher un outil (nom, référence)…" autocomplete="off">
+      <button type="button" class="inv-chip on" data-filter="all">Tous</button>
+      <button type="button" class="inv-chip" data-filter="todo">À pointer</button>
+      <button type="button" class="inv-chip" data-filter="ecarts">Écarts</button>
+    </div>
+    <div class="inv-toolbar" style="margin-top:0;">
+      <button type="button" class="btn btn-secondary btn-sm" id="inv-scan">📷 Scanner un outil</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="inv-all-ok">Marquer « Conforme » tout ce qui reste</button>
+    </div>
+
+    <div class="inv-list" id="inv-list">${state.resultats.map(rowHtml).join('')}</div>
+
+    <div class="inv-section">
+      <div style="font-weight:700;">Outils en trop <span style="font-weight:400;color:var(--steel);font-size:12.5px;">(trouvés dans la servante mais absents de la liste)</span></div>
+      <div id="inv-trop-list"></div>
+      <button type="button" class="btn btn-secondary btn-sm" id="inv-add-trop" style="margin-top:8px;">+ Ajouter un outil en trop</button>
+    </div>
+
+    <div id="inv-confirm" class="inv-confirm" style="display:none;"></div>
+
+    <div class="inv-foot">
+      <span class="inv-state" id="inv-state">Brouillon enregistré automatiquement</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button type="button" class="btn btn-danger btn-sm" id="inv-discard">Abandonner</button>
+        <button type="button" class="btn btn-secondary" id="inv-save-close">Enregistrer et fermer</button>
+        <button type="button" class="btn btn-primary" id="inv-finish">Terminer l'inventaire</button>
       </div>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-secondary" id="m-cancel">Annuler</button>
-        <button type="submit" class="btn btn-primary">Enregistrer l'inventaire</button>
-      </div>
-    </form>
+    </div>
+    <input type="file" accept="image/*" id="inv-photo-input" style="display:none;">
   `);
-  document.getElementById('m-close').addEventListener('click', closeModal);
-  document.getElementById('m-cancel').addEventListener('click', closeModal);
-  document.getElementById('inventaire-form').addEventListener('submit', async (e)=>{
-    e.preventDefault();
-    const errEl = document.getElementById('inv-modal-error');
+  document.getElementById('modal-box').classList.add('modal-wide');
+
+  const $ = (sel) => document.querySelector(sel);
+  const rowOf = (id) => state.resultats.find(r => r.localId === id);
+  const setState = (txt, bad) => { const el = $('#inv-state'); if(el){ el.textContent = txt; el.style.color = bad ? '#d64545' : ''; } };
+  const showError = (txt) => { const el = $('#inv-error'); if(!el) return; el.textContent = txt; el.style.display = txt ? 'block' : 'none'; };
+
+  async function persist(){
     try{
-      const resultats = outils.map(t => ({
-        localId: t.localId, outilId: t.outilId, reference: t.reference, designation: t.designation, categorie: t.categorie,
-        resultat: document.querySelector(`[data-inv-result="${t.localId}"]`).value
-      }));
-      await addDoc(collection(db,'inventaires'), {
-        servanteId, agentMatricule: s.agentMatricule, garage: s.garage,
-        dateInventaire: nowIso(), realiseParMatricule: currentUser.matricule, realiseParNom: `${currentUser.prenom} ${currentUser.nom}`,
-        resultats,
-        valideParAgent:false, valideParAgentMatricule:null, valideParAgentNom:null, valideParAgentLe:null,
-        valideParAdmin:false, valideParAdminMatricule:null, valideParAdminNom:null, valideParAdminLe:null
-      });
-      closeModal();
+      await updateDoc(doc(db,'inventaires',invId), { resultats: state.resultats, enTrop: state.enTrop });
+      const t = new Date();
+      setState(`✓ Enregistré à ${String(t.getHours()).padStart(2,'0')}h${String(t.getMinutes()).padStart(2,'0')}`);
     }catch(err){
-      errEl.textContent = err.message; errEl.style.display = 'block';
+      setState('⚠ Non enregistré : ' + err.message, true);
+    }
+  }
+  function scheduleSave(){
+    setState('Enregistrement…');
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(persist, 600);
+  }
+  async function flushSave(){ clearTimeout(saveTimer); await persist(); }
+
+  function refreshRow(id){
+    const r = rowOf(id); if(!r) return;
+    const row = $(`[data-row="${id}"]`); if(!row) return;
+    row.querySelectorAll('[data-set]').forEach(b => b.classList.toggle('sel', b.dataset.set === r.resultat));
+    const extra = $(`[data-extra="${id}"]`);
+    const isEcart = r.resultat && r.resultat !== 'Conforme';
+    extra.style.display = isEcart ? 'block' : 'none';
+    const ta = extra.querySelector('textarea');
+    if(ta && ta.value !== (r.commentaire||'')) ta.value = r.commentaire || '';
+    const st = $(`[data-photo-state="${id}"]`);
+    st.innerHTML = r.photoUrl ? `<img class="inv-thumb" src="${escapeHtml(r.photoUrl)}" alt="photo"> <a href="#" data-photo-del="${id}">retirer</a>` : '';
+  }
+  function refreshProgress(){
+    const total = state.resultats.length;
+    const done = state.resultats.filter(r => r.resultat).length;
+    const ecarts = state.resultats.filter(r => r.resultat && r.resultat !== 'Conforme').length;
+    $('#inv-count').textContent = `${done} / ${total}`;
+    $('#inv-bar-fill').style.width = total ? Math.round(done * 100 / total) + '%' : '0';
+    $('#inv-ecarts').textContent = ecarts ? `· ${ecarts} écart${ecarts>1?'s':''}` : '';
+    applyFilter();
+  }
+  function applyFilter(){
+    const q = ($('#inv-search').value || '').trim().toLowerCase();
+    state.resultats.forEach(r => {
+      const row = $(`[data-row="${r.localId}"]`); if(!row) return;
+      const txt = [r.designation, r.reference, r.categorie].join(' ').toLowerCase();
+      let show = !q || txt.includes(q);
+      if(show && activeFilter === 'todo') show = !r.resultat;
+      if(show && activeFilter === 'ecarts') show = r.resultat && r.resultat !== 'Conforme';
+      row.style.display = show ? '' : 'none';
+    });
+  }
+  function drawTrop(){
+    const box = $('#inv-trop-list');
+    box.innerHTML = state.enTrop.map(e => `
+      <div class="inv-trop" data-trop="${e.id}">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input type="text" data-trop-field="designation" data-id="${e.id}" list="inv-catalogue-list" placeholder="Désignation de l'outil trouvé" value="${escapeHtml(e.designation||'')}" style="flex:2;min-width:180px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;">
+          <input type="text" data-trop-field="reference" data-id="${e.id}" placeholder="Référence (si connue)" value="${escapeHtml(e.reference||'')}" style="flex:1;min-width:120px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;">
+        </div>
+        <textarea rows="2" data-trop-field="commentaire" data-id="${e.id}" placeholder="Commentaire (d'où vient cet outil ?)" style="width:100%;margin-top:6px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;font-family:inherit;">${escapeHtml(e.commentaire||'')}</textarea>
+        <div class="inv-photo-line">
+          <button type="button" class="btn btn-secondary btn-sm" data-trop-photo="${e.id}">📷 Photo</button>
+          ${e.photoUrl ? `<img class="inv-thumb" src="${escapeHtml(e.photoUrl)}" alt="photo">` : ''}
+          <button type="button" class="btn btn-secondary btn-sm" data-trop-del="${e.id}" style="margin-left:auto;">Supprimer</button>
+        </div>
+      </div>`).join('') + `<datalist id="inv-catalogue-list">${outilsCache.map(o=>`<option value="${escapeHtml(o.designation)}">${escapeHtml(o.reference)}</option>`).join('')}</datalist>`;
+  }
+
+  // --- clics sur la liste (délégation)
+  $('#inv-list').addEventListener('click', (e)=>{
+    const b = e.target.closest('[data-set]');
+    if(b){
+      const r = rowOf(b.dataset.for);
+      r.resultat = b.dataset.set;
+      if(r.resultat === 'Conforme'){ r.commentaire = ''; r.photoUrl = ''; }
+      refreshRow(r.localId); refreshProgress(); scheduleSave();
+      return;
+    }
+    const ph = e.target.closest('[data-photo]');
+    if(ph){ photoTarget = { type:'row', id: ph.dataset.photo }; $('#inv-photo-input').click(); return; }
+    const del = e.target.closest('[data-photo-del]');
+    if(del){ e.preventDefault(); const r = rowOf(del.dataset.photoDel); r.photoUrl = ''; refreshRow(r.localId); scheduleSave(); }
+  });
+  $('#inv-list').addEventListener('input', (e)=>{
+    const t = e.target.closest('[data-comment]');
+    if(t){ const r = rowOf(t.dataset.comment); r.commentaire = t.value; t.classList.remove('err'); scheduleSave(); }
+  });
+
+  // --- outils en trop
+  $('#inv-add-trop').addEventListener('click', ()=>{
+    state.enTrop.push({ id: uid(), designation:'', reference:'', commentaire:'', photoUrl:'' });
+    drawTrop(); scheduleSave();
+  });
+  $('#inv-trop-list').addEventListener('input', (e)=>{
+    const f = e.target.closest('[data-trop-field]'); if(!f) return;
+    const item = state.enTrop.find(x => x.id === f.dataset.id); if(!item) return;
+    item[f.dataset.tropField] = f.value;
+    if(f.dataset.tropField === 'designation'){
+      const o = outilsCache.find(x => x.designation === f.value);
+      if(o){ item.reference = o.reference; item.outilId = o.id; const refInput = $(`[data-trop-field="reference"][data-id="${item.id}"]`); if(refInput) refInput.value = o.reference; }
+    }
+    scheduleSave();
+  });
+  $('#inv-trop-list').addEventListener('click', (e)=>{
+    const d = e.target.closest('[data-trop-del]');
+    if(d){ state.enTrop = state.enTrop.filter(x => x.id !== d.dataset.tropDel); drawTrop(); scheduleSave(); return; }
+    const p = e.target.closest('[data-trop-photo]');
+    if(p){ photoTarget = { type:'trop', id: p.dataset.tropPhoto }; $('#inv-photo-input').click(); }
+  });
+
+  // --- photo
+  $('#inv-photo-input').addEventListener('change', async (e)=>{
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if(!file || !photoTarget) return;
+    const target = photoTarget; photoTarget = null;
+    setState('Envoi de la photo…');
+    try{
+      const url = await uploadPhotoToCloudinary(file);
+      if(target.type === 'row'){ const r = rowOf(target.id); r.photoUrl = url; refreshRow(r.localId); }
+      else { const it = state.enTrop.find(x => x.id === target.id); if(it){ it.photoUrl = url; drawTrop(); } }
+      scheduleSave();
+    }catch(err){
+      setState('⚠ ' + err.message, true);
     }
   });
+
+  // --- recherche / filtres / tout conforme
+  $('#inv-search').addEventListener('input', applyFilter);
+  document.querySelectorAll('.inv-chip').forEach(c => c.addEventListener('click', ()=>{
+    activeFilter = c.dataset.filter;
+    document.querySelectorAll('.inv-chip').forEach(x => x.classList.toggle('on', x === c));
+    applyFilter();
+  }));
+  $('#inv-all-ok').addEventListener('click', ()=>{
+    const restants = state.resultats.filter(r => !r.resultat);
+    if(!restants.length){ showToast("Tous les outils sont déjà pointés.", 'info'); return; }
+    showConfirmModal(`Marquer ${restants.length} outil${restants.length>1?'s':''} non pointé${restants.length>1?'s':''} comme « Conforme » ? Faites-le seulement si vous les avez tous vérifiés.`, async ()=>{
+      restants.forEach(r => { r.resultat = 'Conforme'; });
+      await flushSave();
+      openInventaireEditor(servanteId, invId, { ...invData, resultats: state.resultats, enTrop: state.enTrop });
+    }, { title:'Tout marquer conforme', confirmLabel:'Oui, tout est conforme', danger:false });
+  });
+
+  // --- scan
+  $('#inv-scan').addEventListener('click', async ()=>{
+    await flushSave();
+    const reopen = (code)=>{
+      openInventaireEditor(servanteId, invId, { ...invData, resultats: state.resultats, enTrop: state.enTrop }, { focusCode: code });
+    };
+    openScanModal((code)=> reopen(code), ()=> reopen(null));
+  });
+
+  // --- fermer / abandonner
+  async function closeEditor(){ await flushSave(); closeModal(); if(currentServanteId === servanteId) setTimeout(()=>renderServanteDetail(servanteId), 250); }
+  $('#m-close').addEventListener('click', closeEditor);
+  $('#inv-save-close').addEventListener('click', async ()=>{ await closeEditor(); showToast("Brouillon enregistré. Vous pourrez le reprendre à tout moment.", 'success'); });
+  $('#inv-discard').addEventListener('click', ()=>{
+    showConfirmModal("Abandonner définitivement cet inventaire en cours ? Tout le pointage sera perdu.", async ()=>{
+      clearTimeout(saveTimer);
+      try{ await deleteDoc(doc(db,'inventaires',invId)); }catch(err){ showToast("Erreur : " + err.message, 'error'); return; }
+      closeModal();
+      showToast("Inventaire abandonné.", 'info');
+      if(currentServanteId === servanteId) setTimeout(()=>renderServanteDetail(servanteId), 250);
+    }, { title:'Abandonner l\'inventaire', confirmLabel:'Abandonner', danger:true });
+  });
+
+  // --- terminer
+  function validate(){
+    const nonPointes = state.resultats.filter(r => !r.resultat);
+    if(nonPointes.length){
+      return { ok:false, msg:`${nonPointes.length} outil${nonPointes.length>1?'s':''} non pointé${nonPointes.length>1?'s':''}. Pointez-les, ou utilisez « Marquer Conforme tout ce qui reste ».`, first: nonPointes[0].localId, filter:'todo' };
+    }
+    const sansComment = state.resultats.filter(r => r.resultat !== 'Conforme' && (r.commentaire||'').trim().length < 3);
+    if(sansComment.length){
+      sansComment.forEach(r => { const ta = $(`[data-comment="${r.localId}"]`); if(ta) ta.classList.add('err'); });
+      return { ok:false, msg:`${sansComment.length} écart${sansComment.length>1?'s':''} sans explication. Une courte explication est obligatoire pour chaque écart.`, first: sansComment[0].localId, filter:'ecarts' };
+    }
+    const tropSans = state.enTrop.filter(e => !(e.designation||'').trim());
+    if(tropSans.length){
+      return { ok:false, msg:"Un outil en trop n'a pas de désignation. Renseignez-la ou supprimez la ligne.", first:null, filter:'all' };
+    }
+    return { ok:true };
+  }
+  $('#inv-finish').addEventListener('click', ()=>{
+    showError('');
+    const v = validate();
+    if(!v.ok){
+      showError(v.msg);
+      activeFilter = v.filter;
+      document.querySelectorAll('.inv-chip').forEach(x => x.classList.toggle('on', x.dataset.filter === v.filter));
+      applyFilter();
+      if(v.first){ const row = $(`[data-row="${v.first}"]`); if(row){ row.scrollIntoView({ block:'center', behavior:'smooth' }); row.classList.add('flash'); setTimeout(()=>row.classList.remove('flash'), 2000); } }
+      return;
+    }
+    const n = (x) => state.resultats.filter(r => r.resultat === x).length;
+    const box = $('#inv-confirm');
+    box.style.display = 'block';
+    box.innerHTML = `
+      <div style="font-weight:700;margin-bottom:6px;">Récapitulatif avant clôture</div>
+      <div style="font-size:13.5px;line-height:1.7;">
+        ${state.resultats.length} outils pointés : <b style="color:#00863f;">${n('Conforme')} conformes</b>${n('Manquant')?` · <b style="color:#d64545;">${n('Manquant')} manquant${n('Manquant')>1?'s':''}</b>`:''}${n('Cassé')?` · <b style="color:#d64545;">${n('Cassé')} cassé${n('Cassé')>1?'s':''}</b>`:''}${n('Usé')?` · <b style="color:#8f6412;">${n('Usé')} usé${n('Usé')>1?'s':''}</b>`:''}
+        ${state.enTrop.length ? `<br><b>${state.enTrop.length} outil${state.enTrop.length>1?'s':''} en trop</b>` : ''}
+      </div>
+      <p style="font-size:12px;color:var(--steel);margin:8px 0;">Une fois clôturé, l'inventaire ne peut plus être modifié. Il devra être validé par l'agent puis approuvé par l'administrateur.</p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button type="button" class="btn btn-secondary" id="inv-back">Retour</button>
+        <button type="button" class="btn btn-primary" id="inv-confirm-btn">Confirmer et clôturer</button>
+      </div>`;
+    box.scrollIntoView({ block:'center', behavior:'smooth' });
+    $('#inv-back').addEventListener('click', ()=>{ box.style.display = 'none'; });
+    $('#inv-confirm-btn').addEventListener('click', async ()=>{
+      const btn = $('#inv-confirm-btn'); btn.disabled = true; btn.textContent = 'Clôture…';
+      clearTimeout(saveTimer);
+      try{
+        await updateDoc(doc(db,'inventaires',invId), {
+          resultats: state.resultats, enTrop: state.enTrop,
+          brouillon: false, dateInventaire: nowIso(), termineLe: nowIso(),
+          cloturePar: `${currentUser.prenom} ${currentUser.nom}`, clotureParMatricule: currentUser.matricule
+        });
+        closeModal();
+        showToast("Inventaire clôturé. Il doit maintenant être validé par l'agent puis approuvé par l'administrateur.", 'success');
+        if(currentServanteId === servanteId) setTimeout(()=>renderServanteDetail(servanteId), 250);
+      }catch(err){
+        btn.disabled = false; btn.textContent = 'Confirmer et clôturer';
+        showError("Erreur lors de la clôture : " + err.message);
+      }
+    });
+  });
+
+  // --- initialisation de l'affichage
+  drawTrop();
+  state.resultats.forEach(r => { refreshRow(r.localId); const ta = $(`[data-comment="${r.localId}"]`); if(ta) ta.value = r.commentaire || ''; });
+  refreshProgress();
+  if(opts.focusCode){
+    const code = String(opts.focusCode).trim().toLowerCase();
+    const hit = state.resultats.find(r => String(r.reference||'').trim().toLowerCase() === code)
+             || state.resultats.find(r => code.includes(String(r.reference||'').trim().toLowerCase()) && String(r.reference||'').trim().length >= 3);
+    if(hit){
+      const row = $(`[data-row="${hit.localId}"]`);
+      if(row){ row.scrollIntoView({ block:'center' }); row.classList.add('flash'); setTimeout(()=>row.classList.remove('flash'), 2500); }
+      showToast(`Outil repéré : ${hit.designation}`, 'success');
+    } else {
+      showToast(`Aucun outil de cette servante ne correspond au code « ${opts.focusCode} ».`, 'warning');
+    }
+  }
 }
 
 async function validerInventaireAgent(inventaireId, servanteId){
@@ -3847,7 +4287,14 @@ async function validerInventaireAdmin(inventaireId, servanteId){
       await logMouvement({
         servanteId, outilId: r.outilId, reference: r.reference, designation: r.designation,
         type: typeMap[r.resultat] || 'manquant',
-        motif: `Constaté lors de l'inventaire du ${formatDate(inv.dateInventaire)}`
+        motif: `Constaté lors de l'inventaire du ${formatDate(inv.dateInventaire)}${r.commentaire ? ' — ' + r.commentaire : ''}`
+      }, { preValide: true });
+    }
+    for(const e of (inv.enTrop||[])){
+      await logMouvement({
+        servanteId, outilId: e.outilId || null, reference: e.reference || '—', designation: e.designation,
+        type: 'en_trop',
+        motif: `Outil en trop trouvé lors de l'inventaire du ${formatDate(inv.dateInventaire)}${e.commentaire ? ' — ' + e.commentaire : ''}`
       }, { preValide: true });
     }
     if(nonConformes.length){
