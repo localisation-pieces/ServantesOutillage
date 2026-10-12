@@ -520,7 +520,8 @@ tbody tr:hover{background:#FAFCFA;}
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
-  getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
+  getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+  collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
   query, where, orderBy, onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
@@ -697,6 +698,9 @@ let demandesMdpCache = [];
 let garagesCache = [];
 let equipesCache = [];
 let rolesCache = [];
+let securiteCache = { modeTest:false, separationTaches:false };
+function isAdminUser(){ return !!currentUser && currentUser.role === 'admin'; }
+function modeTestActif(){ return isAdminUser() && securiteCache.modeTest === true; }
 let currentServanteId = null;
 let currentView = 'agents';
 
@@ -714,7 +718,13 @@ const initTimeout = setTimeout(()=>{
 
 try{
   const app = initializeApp(firebaseConfig);
-  db = getFirestore(app);
+  try{
+    // Cache local : si le réseau se coupe, les pointages restent enregistrés sur l'appareil
+    // et sont envoyés automatiquement au retour du réseau.
+    db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
+  }catch(e){
+    db = getFirestore(app);
+  }
   auth = getAuth(app);
   firebaseReady = true;
   clearTimeout(initTimeout);
@@ -1209,6 +1219,10 @@ function attachListeners(){
     rolesCache = snap.exists() ? (snap.data().list || []) : [];
     renderNav();
     if(currentView === 'parametres' || currentView === 'administration' || currentView === 'agents') renderCurrentView();
+  });
+  onSnapshot(doc(db,'parametres','securite'), (snap)=>{
+    securiteCache = { modeTest:false, separationTaches:false, ...(snap.exists() ? snap.data() : {}) };
+    if(['parametres','journal','servantes'].includes(currentView)) renderCurrentView();
   });
   onSnapshot(collection(db,'mouvements'), (snap)=>{
     mouvementsAllCache = snap.docs.map(d=>({id:d.id, ...d.data()}));
@@ -1936,6 +1950,18 @@ function renderParametresView(){
   main.innerHTML = `
     <div class="page-head"><div><h2>Paramètres</h2><p class="sub">Listes utilisées dans les fiches agents</p></div></div>
 
+    ${isAdminUser() ? `
+    <div class="section-label">Mode test et sécurité des inventaires</div>
+    <div class="panel" style="padding:16px 18px;">
+      <div class="checkbox-row" style="margin-bottom:6px;">
+        <input type="checkbox" id="sec-mode-test"><label for="sec-mode-test"><b>Mode test</b> — l'administrateur peut rouvrir, modifier ou supprimer n'importe quel inventaire, mouvement ou servante, même déjà validé.</label>
+      </div>
+      <p style="font-size:12px;color:var(--steel);margin:0 0 14px 28px;">À désactiver quand l'application est en service réel : les éléments validés sont alors verrouillés et ne peuvent plus qu'être <b>annulés avec un motif</b> (ils restent dans l'historique).</p>
+      <div class="checkbox-row">
+        <input type="checkbox" id="sec-separation"><label for="sec-separation"><b>Séparation des tâches</b> — la personne qui a réalisé un inventaire ou un mouvement ne peut pas l'approuver elle-même.</label>
+      </div>
+    </div>` : ''}
+
     <div class="section-label">Garages</div>
     <div class="panel" style="padding:16px 18px;">
       <div class="field-row" style="align-items:flex-end;margin-bottom:14px;">
@@ -1967,6 +1993,24 @@ function renderParametresView(){
       <div id="roles-list" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
     </div>
   `;
+
+  (function bindSecurite(){
+    const mt = document.getElementById('sec-mode-test'), sp = document.getElementById('sec-separation');
+    if(!mt || !sp) return;
+    mt.checked = securiteCache.modeTest === true;
+    sp.checked = securiteCache.separationTaches === true;
+    const save = async ()=>{
+      try{
+        await setDoc(doc(db,'parametres','securite'), {
+          modeTest: mt.checked, separationTaches: sp.checked,
+          majPar: `${currentUser.prenom} ${currentUser.nom}`, majLe: nowIso()
+        });
+        showToast("Réglage enregistré.", 'success');
+      }catch(err){ showToast("Erreur : " + err.message, 'error'); }
+    };
+    mt.addEventListener('change', save);
+    sp.addEventListener('change', save);
+  })();
 
   function drawRoles(){
     const el = document.getElementById('roles-list');
@@ -2155,6 +2199,10 @@ function renderJournalInventairesView(){
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M3 12a9 9 0 1 0 3-6.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M3 4v5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 7v5l3 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Historique validé
       </button>
+      <button class="journal-tab ${journalTab==='remplacer'?'active':''}" id="journal-tab-remplacer">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        À remplacer${mouvementsAllCache.filter(mouvementARemplacer).length ? ` (${mouvementsAllCache.filter(mouvementARemplacer).length})` : ''}
+      </button>
     </div>
     <div id="journal-tab-content"></div>
   `;
@@ -2164,7 +2212,9 @@ function renderJournalInventairesView(){
   `));
   document.getElementById('journal-tab-planification').addEventListener('click', ()=>{ journalTab='planification'; renderCurrentView(); });
   document.getElementById('journal-tab-historique').addEventListener('click', ()=>{ journalTab='historique'; renderCurrentView(); });
+  document.getElementById('journal-tab-remplacer').addEventListener('click', ()=>{ journalTab='remplacer'; renderCurrentView(); });
   if(journalTab === 'planification') renderJournalPlanification();
+  else if(journalTab === 'remplacer') renderJournalARemplacer();
   else renderJournalHistorique();
 }
 
@@ -2245,15 +2295,15 @@ function renderJournalHistorique(){
   servantesCache.forEach(s=>{ servanteMap[s.id] = s; });
 
   const mvtRows = mouvementsAllCache.filter(m=>m.valideParAgent && m.valideParAdmin).map(m=>({
-    type:'mouvement', date:m.date, servanteId:m.servanteId, label: (MVT_TYPES[m.type]||{label:m.type}).label,
-    detail: `${m.designation||''} (${m.reference||''})${m.motif?' — « '+m.motif+' »':''}`,
+    type:'mouvement', id:m.id, annule:!!m.annule, date:m.date, servanteId:m.servanteId, label: (MVT_TYPES[m.type]||{label:m.type}).label,
+    detail: `${m.designation||''} (${m.reference||''})${m.motif?' — « '+m.motif+' »':''}${m.annule ? ' — ANNULÉ par '+(m.annuleParNom||'?')+' : '+(m.motifAnnulation||'') : ''}`,
     utilisateurNom: m.utilisateurNom, valideParAgentNom: m.valideParAgentNom, valideParAdminNom: m.valideParAdminNom
   }));
   const invRows = inventairesAllCache.filter(i=>i.valideParAgent && i.valideParAdmin).map(i=>{
     const ecarts = (i.resultats||[]).filter(r=>r.resultat!=='Conforme').length;
     return {
-      type:'inventaire', id:i.id, date:i.dateInventaire, servanteId:i.servanteId, label:'Inventaire',
-      detail: `${ecarts} écart${ecarts>1?'s':''} · réalisé par ${i.realiseParNom||''}`,
+      type:'inventaire', id:i.id, annule:!!i.annule, date:i.dateInventaire, servanteId:i.servanteId, label:'Inventaire',
+      detail: `${ecarts} écart${ecarts>1?'s':''} · réalisé par ${i.realiseParNom||''}${(i.enTrop||[]).length ? ' · '+i.enTrop.length+' en trop' : ''}${i.annule ? ' — ANNULÉ par '+(i.annuleParNom||'?')+' : '+(i.motifAnnulation||'') : ''}`,
       utilisateurNom: i.realiseParNom, valideParAgentNom: i.valideParAgentNom, valideParAdminNom: i.valideParAdminNom
     };
   });
@@ -2269,6 +2319,7 @@ function renderJournalHistorique(){
         <option value="mouvement">Mouvements</option>
         <option value="inventaire">Inventaires</option>
       </select>
+      <button class="btn btn-secondary" id="hist-export">Exporter Excel</button>
     </div>
     <div class="panel">
       <div class="table-wrap">
@@ -2292,9 +2343,9 @@ function renderJournalHistorique(){
       return true;
     });
     document.getElementById('hist-tbody').innerHTML = filtered.map(r=>`
-      <tr>
+      <tr style="${r.annule ? 'opacity:.55;text-decoration:line-through;' : ''}">
         <td class="mono">${formatDate(r.date)}</td>
-        <td><span class="pill pill-gray">${escapeHtml(r.label)}</span></td>
+        <td><span class="pill ${r.annule ? 'pill-red' : 'pill-gray'}">${escapeHtml(r.label)}${r.annule ? ' (annulé)' : ''}</span></td>
         <td>${escapeHtml(r.servante?.agentNom||'—')}</td>
         <td>${escapeHtml(r.detail)}</td>
         <td style="font-size:12px;color:var(--steel);">${escapeHtml(r.valideParAgentNom||'—')} · ${escapeHtml(r.valideParAdminNom||'—')}</td>
@@ -2302,6 +2353,8 @@ function renderJournalHistorique(){
           <div class="row-actions">
             ${r.type==='inventaire' && r.servante ? `<button class="btn btn-secondary btn-sm" data-pdf-hist="${r.id}" data-pdf-hist-servante="${r.servante.id}">PDF</button>` : ''}
             ${r.servante?`<button class="btn btn-secondary btn-sm" data-open-servante="${r.servante.id}">Ouvrir</button>`:''}
+            ${isAdminUser() && !r.annule && r.type==='inventaire' && modeTestActif() ? `<button class="btn btn-secondary btn-sm" data-hist-reopen="${r.id}">Rouvrir</button>` : ''}
+            ${isAdminUser() && !r.annule ? `<button class="btn btn-danger btn-sm" data-hist-del="${r.id}" data-hist-type="${r.type}">${modeTestActif() ? 'Supprimer' : 'Annuler'}</button>` : ''}
           </div>
         </td>
       </tr>`).join('');
@@ -2312,8 +2365,18 @@ function renderJournalHistorique(){
     document.querySelectorAll('[data-pdf-hist]').forEach(b=>{
       b.addEventListener('click', ()=>downloadInventairePDF(b.dataset.pdfHist, b.dataset.pdfHistServante));
     });
+    document.querySelectorAll('[data-hist-reopen]').forEach(b=>{
+      b.addEventListener('click', ()=>corrigerInventaireRouvrir(b.dataset.histReopen));
+    });
+    document.querySelectorAll('[data-hist-del]').forEach(b=>{
+      b.addEventListener('click', ()=>{
+        if(b.dataset.histType === 'inventaire') corrigerInventaireSupprimer(b.dataset.histDel);
+        else corrigerMouvementSupprimer(b.dataset.histDel);
+      });
+    });
   }
   draw();
+  document.getElementById('hist-export').addEventListener('click', exporterHistoriqueExcel);
   document.getElementById('hist-search').addEventListener('input', draw);
   document.getElementById('hist-type-filter').addEventListener('change', draw);
 }
@@ -2582,7 +2645,7 @@ function renderDashboardGlobal(main){
   const garageMap = {};
   servantesCache.forEach(s=>{ garageMap[s.id] = s.garage || 'Non renseigné'; });
   const ecartsParGarage = {};
-  inventairesAllCache.filter(inv=>!inv.brouillon).forEach(inv=>{
+  inventairesAllCache.filter(inv=>!inv.brouillon && !inv.annule).forEach(inv=>{
     const g = garageMap[inv.servanteId] || inv.garage || 'Non renseigné';
     const nb = (inv.resultats||[]).filter(r=>r.resultat!=='Conforme').length;
     if(nb>0) ecartsParGarage[g] = (ecartsParGarage[g]||0) + nb;
@@ -2595,6 +2658,7 @@ function renderDashboardGlobal(main){
 
   main.innerHTML = `
     <div class="page-head"><div><h2>Tableau de bord</h2><p class="sub">Vue d'ensemble de l'atelier</p></div></div>
+    ${indicateursHtml()}
     ${todayReminders.length ? `
       <div class="panel" style="border-color:var(--red);background:var(--red-pale);padding:14px 18px;margin-bottom:16px;">
         <b style="color:var(--red);">🔔 Rappel — ${todayReminders.length} inventaire${todayReminders.length>1?'s':''} programmé${todayReminders.length>1?'s':''} aujourd'hui ou en retard, équipe ${escapeHtml(currentUser.equipe)}</b>
@@ -2838,6 +2902,10 @@ function openReattribuerServanteModal(servanteId){
         </select>
       </div>
       <p style="font-size:12px;color:var(--steel);">Tous les outils et l'historique déjà présents sur cette servante restent inchangés.</p>
+      <div class="field-row">
+        <div class="field"><label>Quantité</label><input type="number" id="assign-qte" min="1" step="1" value="1"></div>
+        <div class="field"><label>N° de série (optionnel)</label><input type="text" id="assign-serie"></div>
+      </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-secondary" id="m-cancel">Annuler</button>
         <button type="submit" class="btn btn-primary">Attribuer</button>
@@ -2896,6 +2964,11 @@ async function validerMouvementAgent(mvtId){
 }
 
 async function validerMouvementAdmin(mvtId){
+  const mv = mouvementsAllCache.find(x=>x.id===mvtId);
+  if(securiteCache.separationTaches && mv && mv.utilisateur === currentUser.matricule){
+    showToast("Séparation des tâches : vous avez réalisé ce mouvement, un autre administrateur doit l'approuver.", 'warning');
+    return;
+  }
   await updateDoc(doc(db,'mouvements',mvtId), {
     valideParAdmin: true,
     valideParAdminMatricule: currentUser.matricule,
@@ -2921,6 +2994,14 @@ async function validerMouvementsBulkAgent(mvtIds){
 }
 
 async function validerMouvementsBulkAdmin(mvtIds){
+  if(securiteCache.separationTaches){
+    const mine = mvtIds.filter(id => { const m = mouvementsAllCache.find(x=>x.id===id); return m && m.utilisateur === currentUser.matricule; });
+    if(mine.length){
+      showToast(`Séparation des tâches : ${mine.length} mouvement${mine.length>1?'s':''} réalisé${mine.length>1?'s':''} par vous ne peu${mine.length>1?'vent':'t'} pas être approuvé${mine.length>1?'s':''} par vous.`, 'warning');
+      mvtIds = mvtIds.filter(id => !mine.includes(id));
+      if(!mvtIds.length) return;
+    }
+  }
   showConfirmModal(`Approuver ces ${mvtIds.length} mouvement${mvtIds.length>1?'s':''} en une fois (étape admin) ?`, async ()=>{
     for(const id of mvtIds){
       await updateDoc(doc(db,'mouvements',id), {
@@ -2976,10 +3057,14 @@ function renderServanteDetail(servanteId){
         ${canProgrammer ? `<button class="btn btn-secondary" id="btn-programmer-inv">Programmer un inventaire</button>` : ''}
         ${canInventaire ? `<button class="btn ${findDraftInventaire(servanteId) ? 'btn-primary' : 'btn-secondary'}" id="btn-new-inventaire">${findDraftInventaire(servanteId) ? '📝 Reprendre l\'inventaire en cours' : '+ Nouvel inventaire'}</button>` : ''}
         ${canAttribuer ? `<button class="btn btn-primary" id="btn-add-tool">+ Attribuer un outil</button>` : ''}
+        ${modeTestActif() ? `<button class="btn btn-danger" id="btn-del-servante">Supprimer la servante</button>` : ''}
       </div>
     </div>
 
-    <div class="section-label">Outils en dotation (${outils.length})</div>
+    <div class="section-label" style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+      <span>Outils en dotation (${outils.length})</span>
+      <button class="btn btn-secondary btn-sm" id="btn-export-dotation" style="text-transform:none;letter-spacing:0;">Exporter Excel</button>
+    </div>
     ${(canCharger || canEnregistrerModele || canToutCatalogue) ? `
     <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
       ${canCharger ? `<button class="btn btn-secondary btn-sm" id="btn-charger-modele">Charger le modèle de dotation</button>` : ''}
@@ -2988,6 +3073,8 @@ function renderServanteDetail(servanteId){
       ${modeleDotationCache ? `<span style="font-size:11.5px;color:var(--steel);">Modèle actuel : ${modeleDotationCache.outils.length} outil${modeleDotationCache.outils.length>1?'s':''}, mis à jour par ${escapeHtml(modeleDotationCache.updatedPar)}</span>` : `<span style="font-size:11.5px;color:var(--steel);">Aucun modèle enregistré</span>`}
     </div>` : ''}
     <div class="panel" id="tools-panel"></div>
+
+    <div id="out-section"></div>
 
     <div class="section-label">Inventaires</div>
     <div class="panel" id="inv-panel"><div class="empty-state"><p>Chargement…</p></div></div>
@@ -3010,6 +3097,9 @@ function renderServanteDetail(servanteId){
   if(canReaffecter && disponible) document.getElementById('btn-reattribuer-servante').addEventListener('click', ()=>openReattribuerServanteModal(servanteId));
   if(canAttribuer) document.getElementById('btn-add-tool').addEventListener('click', ()=>openAssignToolModal(servanteId));
   if(canInventaire) document.getElementById('btn-new-inventaire').addEventListener('click', ()=>openInventaireModal(servanteId));
+  document.getElementById('btn-export-dotation').addEventListener('click', ()=>exporterDotationExcel(servanteId));
+  const delSv = document.getElementById('btn-del-servante');
+  if(delSv) delSv.addEventListener('click', ()=>corrigerServanteSupprimer(servanteId));
   if(canProgrammer) document.getElementById('btn-programmer-inv').addEventListener('click', ()=>openProgrammerInventaireModal(servanteId));
   if(canCharger) document.getElementById('btn-charger-modele').addEventListener('click', ()=>chargerModele(servanteId));
   if(canEnregistrerModele) document.getElementById('btn-enregistrer-modele').addEventListener('click', ()=>enregistrerCommeModele(servanteId));
@@ -3022,23 +3112,48 @@ function renderServanteDetail(servanteId){
     toolsPanel.innerHTML = outils.map(t => `
       <div class="tool-row">
         <div class="meta">
-          <div class="desig">${escapeHtml(t.designation)} <span class="cat-badge" style="margin-left:6px;">${escapeHtml(t.categorie)}</span></div>
-          <div class="ref">${escapeHtml(t.reference)} · attribué le ${formatDate(t.dateAttribution)}</div>
+          <div class="desig">${escapeHtml(t.designation)}${(t.quantite||1)>1 ? ` <b>× ${t.quantite}</b>` : ''} <span class="cat-badge" style="margin-left:6px;">${escapeHtml(t.categorie)}</span></div>
+          <div class="ref">${escapeHtml(t.reference)}${t.numeroSerie ? ' · S/N ' + escapeHtml(t.numeroSerie) : ''} · attribué le ${formatDate(t.dateAttribution)}</div>
         </div>
-        ${canMouvements ? `
+        ${canMouvements || canAttribuer ? `
         <div class="tool-actions">
+          ${canAttribuer ? `<button class="btn btn-secondary btn-sm" data-edit-dot="${t.localId}">Modifier</button>` : ''}
+          ${canMouvements ? `
           <button class="btn btn-secondary btn-sm" data-mvt="retour" data-lid="${t.localId}">Retour</button>
           <button class="btn btn-danger btn-sm" data-mvt="casse" data-lid="${t.localId}">Cassé</button>
           <button class="btn btn-secondary btn-sm" data-mvt="usure" data-lid="${t.localId}">Usé</button>
           <button class="btn btn-secondary btn-sm" data-mvt="echange" data-lid="${t.localId}">Échanger</button>
-          <button class="btn btn-secondary btn-sm" data-mvt="plus_necessaire" data-lid="${t.localId}">Plus nécessaire</button>
+          <button class="btn btn-secondary btn-sm" data-mvt="plus_necessaire" data-lid="${t.localId}">Plus nécessaire</button>` : ''}
         </div>` : ''}
       </div>`).join('');
+    toolsPanel.querySelectorAll('[data-edit-dot]').forEach(b=>{
+      b.addEventListener('click', ()=>openModifierDotationModal(servanteId, b.dataset.editDot));
+    });
     if(canMouvements){
       toolsPanel.querySelectorAll('[data-mvt]').forEach(b=>{
         b.addEventListener('click', ()=>openMouvementModal(servanteId, b.dataset.lid, b.dataset.mvt));
       });
     }
+  }
+
+  // Outils sortis de la dotation (manquants, cassés, usés…) : possibilité de les remettre en service
+  const sortis = (s.outilsAssignes||[]).filter(t => !t.actif);
+  const outSection = document.getElementById('out-section');
+  if(outSection && sortis.length){
+    const peutRemettre = canMouvements || isAdminUser();
+    outSection.innerHTML = `
+      <div class="section-label">Sortis de la dotation (${sortis.length})</div>
+      <div class="panel">${sortis.map(t => `
+        <div class="tool-row">
+          <div class="meta">
+            <div class="desig">${escapeHtml(t.designation)} <span class="pill pill-${t.etat==='Usé'?'amber':'red'}" style="margin-left:6px;">${escapeHtml(t.etat||'Retiré')}</span></div>
+            <div class="ref">${escapeHtml(t.reference)}</div>
+          </div>
+          ${peutRemettre ? `<div class="tool-actions"><button class="btn btn-secondary btn-sm" data-remettre="${t.localId}">Remettre en service</button></div>` : ''}
+        </div>`).join('')}</div>`;
+    outSection.querySelectorAll('[data-remettre]').forEach(b=>{
+      b.addEventListener('click', ()=>remettreOutilEnService(servanteId, b.dataset.remettre));
+    });
   }
 
   loadMouvements(servanteId);
@@ -3095,6 +3210,7 @@ async function loadMouvements(servanteId){
               <div style="margin-top:5px;">
                 ${validationStatusHtml(m, s, `data-validate-mvt-agent="${m.id}"`, `data-validate-mvt-admin="${m.id}"`)}
               </div>
+              ${isAdminUser() ? `<div style="margin-top:6px;"><button class="btn btn-danger btn-sm" data-del-mvt="${m.id}">Supprimer</button></div>` : ''}
             </div>
             <div class="mvt-date">${formatDate(m.date)}</div>
           </div>`).join('')}
@@ -3103,6 +3219,9 @@ async function loadMouvements(servanteId){
 
     panel.querySelectorAll('[data-validate-mvt-agent]').forEach(b=>{
       b.addEventListener('click', ()=>validerMouvementAgent(b.dataset.validateMvtAgent));
+    });
+    panel.querySelectorAll('[data-del-mvt]').forEach(b=>{
+      b.addEventListener('click', ()=>corrigerMouvementSupprimer(b.dataset.delMvt));
     });
     panel.querySelectorAll('[data-validate-mvt-admin]').forEach(b=>{
       b.addEventListener('click', ()=>validerMouvementAdmin(b.dataset.validateMvtAdmin));
@@ -3254,8 +3373,9 @@ async function loadInventaires(servanteId){
             <b style="text-transform:uppercase;letter-spacing:0.04em;font-size:10.5px;">Depuis l'inventaire précédent :</b><br>
             ${comparisonLines.join('<br>')}
           </div>` : ''}
-        <div style="margin-top:10px;">
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
           <button class="btn btn-secondary btn-sm" data-pdf-inv="${inv.id}">Télécharger le PDF</button>
+          ${isAdminUser() ? `<button class="btn btn-secondary btn-sm" data-reopen-inv2="${inv.id}">Rouvrir / corriger</button><button class="btn btn-danger btn-sm" data-del-inv="${inv.id}">${inv.valideParAdmin && !modeTestActif() ? 'Annuler' : 'Supprimer'}</button>` : ''}
         </div>
       </div>`;
     }).join('') + journalLink;
@@ -3270,6 +3390,12 @@ async function loadInventaires(servanteId){
     });
     panel.querySelectorAll('[data-pdf-inv]').forEach(b=>{
       b.addEventListener('click', ()=>downloadInventairePDF(b.dataset.pdfInv, servanteId));
+    });
+    panel.querySelectorAll('[data-reopen-inv2]').forEach(b=>{
+      b.addEventListener('click', ()=>corrigerInventaireRouvrir(b.dataset.reopenInv2));
+    });
+    panel.querySelectorAll('[data-del-inv]').forEach(b=>{
+      b.addEventListener('click', ()=>corrigerInventaireSupprimer(b.dataset.delInv));
     });
     bindJournalLink('inv-journal-link', s);
   }catch(err){
@@ -3731,7 +3857,7 @@ async function downloadInventairePDF(inventaireId, servanteId){
       margin: { left: margin, right: margin },
       tableWidth: contentW,
       head: [["Référence", "Désignation", "Catégorie", "Résultat", "Commentaire"]],
-      body: resultats.map(r => [r.reference, r.designation, r.categorie||'—', r.resultat || '—', (r.commentaire || '') + (r.photoUrl ? '  [photo en annexe]' : '')]),
+      body: resultats.map(r => [r.reference, r.designation + ((r.quantiteAttendue||1) > 1 ? ' x' + r.quantiteAttendue : ''), r.categorie||'—', r.resultat || '—', ((r.quantiteAttendue||1) > 1 && r.resultat !== 'Conforme' ? `[${(r.quantiteAttendue||1) - piecesEnEcart(r)}/${r.quantiteAttendue} conformes] ` : '') + (r.commentaire || '') + (r.photoUrl ? '  [photo en annexe]' : '')]),
       theme: 'grid',
       styles: { fontSize: 8, cellPadding: 2.4, lineColor: [225,228,225], lineWidth: 0.2, overflow: 'linebreak', valign: 'middle' },
       headStyles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 8 },
@@ -3884,7 +4010,7 @@ function openInventaireModal(servanteId){
     realiseParMatricule: currentUser.matricule, realiseParNom: `${currentUser.prenom} ${currentUser.nom}`,
     resultats: outils.map(t => ({
       localId: t.localId, outilId: t.outilId, reference: t.reference, designation: t.designation,
-      categorie: t.categorie || '', resultat: null, commentaire: '', photoUrl: ''
+      categorie: t.categorie || '', quantiteAttendue: t.quantite || 1, quantiteTrouvee: null, resultat: null, commentaire: '', photoUrl: ''
     })),
     enTrop: [],
     valideParAgent:false, valideParAgentMatricule:null, valideParAgentNom:null, valideParAgentLe:null,
@@ -3899,7 +4025,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
   opts = opts || {};
   const s = servantesCache.find(x=>x.id===servanteId);
   const state = {
-    resultats: (invData.resultats||[]).map(r => ({ commentaire:'', photoUrl:'', ...r, resultat: r.resultat || null })),
+    resultats: (invData.resultats||[]).map(r => ({ commentaire:'', photoUrl:'', quantiteAttendue:1, quantiteTrouvee:null, ...r, resultat: r.resultat || null })),
     enTrop: (invData.enTrop||[]).map(e => ({ ...e }))
   };
   const RES = [
@@ -3917,8 +4043,9 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     <div class="inv-row" data-row="${r.localId}">
       <div class="inv-row-top">
         <div class="inv-meta">
-          <div class="inv-desig">${escapeHtml(r.designation)}</div>
+          <div class="inv-desig">${escapeHtml(r.designation)}${r.quantiteAttendue>1 ? ` <b>× ${r.quantiteAttendue}</b>` : ''}</div>
           <div class="inv-ref">${escapeHtml(r.reference)}${r.categorie ? ' · ' + escapeHtml(r.categorie) : ''}</div>
+          ${r.quantiteAttendue>1 ? `<div class="inv-qty" style="font-size:12.5px;margin-top:4px;">Pièces <b>conformes</b> trouvées : <input type="number" min="0" max="${r.quantiteAttendue}" step="1" data-qty="${r.localId}" style="width:70px;padding:5px 7px;border:1.5px solid var(--line);border-radius:6px;"> / ${r.quantiteAttendue}</div>` : ''}
         </div>
         <div class="inv-btns">
           ${RES.map(x => `<button type="button" class="inv-btn inv-${x.cls}" data-set="${x.v}" data-for="${r.localId}">${x.ico} ${x.v}</button>`).join('')}
@@ -3968,6 +4095,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     <div class="modal-head"><h3>Inventaire — Servante n° ${escapeHtml(numero)}</h3><button class="modal-close" id="m-close">&times;</button></div>
     <div class="inv-head-sub">${escapeHtml(s ? (s.agentNom || 'Servante disponible') : '')} · ${escapeHtml(s ? (s.garage||'') : '')} · commencé le ${formatDate(invData.debutLe || invData.dateInventaire)} par ${escapeHtml(invData.realiseParNom || '')}</div>
     <div class="modal-error" id="inv-error"></div>
+    <div id="inv-offline" style="display:none;background:#fff4d6;border:1px solid #e0b84a;border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:8px;">📴 <b>Hors connexion.</b> Continuez : vos pointages sont gardés sur cet appareil et seront envoyés dès le retour du réseau. (Les photos nécessitent le réseau.)</div>
     <div><b id="inv-count">0 / 0</b> outils pointés <span id="inv-ecarts" style="margin-left:8px;color:var(--steel);"></span></div>
     <div class="inv-bar"><div id="inv-bar-fill"></div></div>
 
@@ -4010,13 +4138,14 @@ function openInventaireEditor(servanteId, invId, invData, opts){
   const showError = (txt) => { const el = $('#inv-error'); if(!el) return; el.textContent = txt; el.style.display = txt ? 'block' : 'none'; };
 
   async function persist(){
-    try{
-      await updateDoc(doc(db,'inventaires',invId), { resultats: state.resultats, enTrop: state.enTrop });
+    const p = updateDoc(doc(db,'inventaires',invId), { resultats: state.resultats, enTrop: state.enTrop });
+    p.then(()=>{
       const t = new Date();
       setState(`✓ Enregistré à ${String(t.getHours()).padStart(2,'0')}h${String(t.getMinutes()).padStart(2,'0')}`);
-    }catch(err){
-      setState('⚠ Non enregistré : ' + err.message, true);
-    }
+    }).catch(err => setState('⚠ Non enregistré : ' + err.message, true));
+    // Hors connexion, l'écriture reste en attente : on n'attend pas la réponse du serveur.
+    await Promise.race([p.catch(()=>{}), new Promise(r => setTimeout(r, 2500))]);
+    if(!navigator.onLine) setState('📴 Hors connexion : enregistré sur cet appareil, il sera envoyé au retour du réseau');
   }
   function scheduleSave(){
     setState('Enregistrement…');
@@ -4036,6 +4165,8 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     if(ta && ta.value !== (r.commentaire||'')) ta.value = r.commentaire || '';
     const st = $(`[data-photo-state="${id}"]`);
     st.innerHTML = r.photoUrl ? `<img class="inv-thumb" src="${escapeHtml(r.photoUrl)}" alt="photo"> <a href="#" data-photo-del="${id}">retirer</a>` : '';
+    const qi = $(`[data-qty="${id}"]`);
+    if(qi && document.activeElement !== qi) qi.value = r.quantiteTrouvee === null || r.quantiteTrouvee === undefined ? '' : r.quantiteTrouvee;
   }
   function refreshProgress(){
     const total = state.resultats.length;
@@ -4081,6 +4212,10 @@ function openInventaireEditor(servanteId, invId, invData, opts){
       const r = rowOf(b.dataset.for);
       r.resultat = b.dataset.set;
       if(r.resultat === 'Conforme'){ r.commentaire = ''; r.photoUrl = ''; }
+      if(r.quantiteAttendue > 1){
+        if(r.resultat === 'Conforme') r.quantiteTrouvee = r.quantiteAttendue;
+        else if(r.quantiteTrouvee === null || r.quantiteTrouvee >= r.quantiteAttendue) r.quantiteTrouvee = 0;
+      }
       refreshRow(r.localId); refreshProgress(); scheduleSave();
       return;
     }
@@ -4090,6 +4225,20 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     if(del){ e.preventDefault(); const r = rowOf(del.dataset.photoDel); r.photoUrl = ''; refreshRow(r.localId); scheduleSave(); }
   });
   $('#inv-list').addEventListener('input', (e)=>{
+    const qi = e.target.closest('[data-qty]');
+    if(qi){
+      const r = rowOf(qi.dataset.qty);
+      let n = parseInt(qi.value, 10);
+      if(Number.isNaN(n)){ r.quantiteTrouvee = null; }
+      else {
+        n = Math.max(0, Math.min(r.quantiteAttendue, n));
+        r.quantiteTrouvee = n;
+        if(n === r.quantiteAttendue){ r.resultat = 'Conforme'; r.commentaire = ''; r.photoUrl = ''; }
+        else if(!r.resultat || r.resultat === 'Conforme') r.resultat = 'Manquant';
+      }
+      refreshRow(r.localId); refreshProgress(); scheduleSave();
+      return;
+    }
     const t = e.target.closest('[data-comment]');
     if(t){ const r = rowOf(t.dataset.comment); r.commentaire = t.value; t.classList.remove('err'); scheduleSave(); }
   });
@@ -4179,6 +4328,10 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     if(nonPointes.length){
       return { ok:false, msg:`${nonPointes.length} outil${nonPointes.length>1?'s':''} non pointé${nonPointes.length>1?'s':''}. Pointez-les, ou utilisez « Marquer Conforme tout ce qui reste ».`, first: nonPointes[0].localId, filter:'todo' };
     }
+    const sansQte = state.resultats.filter(r => r.quantiteAttendue > 1 && r.resultat !== 'Conforme' && (r.quantiteTrouvee === null || r.quantiteTrouvee === undefined));
+    if(sansQte.length){
+      return { ok:false, msg:`${sansQte.length} outil${sansQte.length>1?'s':''} en plusieurs exemplaires : indiquez combien de pièces sont conformes.`, first: sansQte[0].localId, filter:'ecarts' };
+    }
     const sansComment = state.resultats.filter(r => r.resultat !== 'Conforme' && (r.commentaire||'').trim().length < 3);
     if(sansComment.length){
       sansComment.forEach(r => { const ta = $(`[data-comment="${r.localId}"]`); if(ta) ta.classList.add('err'); });
@@ -4221,13 +4374,16 @@ function openInventaireEditor(servanteId, invId, invData, opts){
       const btn = $('#inv-confirm-btn'); btn.disabled = true; btn.textContent = 'Clôture…';
       clearTimeout(saveTimer);
       try{
-        await updateDoc(doc(db,'inventaires',invId), {
+        const fin = updateDoc(doc(db,'inventaires',invId), {
           resultats: state.resultats, enTrop: state.enTrop,
           brouillon: false, dateInventaire: nowIso(), termineLe: nowIso(),
           cloturePar: `${currentUser.prenom} ${currentUser.nom}`, clotureParMatricule: currentUser.matricule
         });
+        if(navigator.onLine) await fin; else fin.catch(()=>{});
         closeModal();
-        showToast("Inventaire clôturé. Il doit maintenant être validé par l'agent puis approuvé par l'administrateur.", 'success');
+        showToast(navigator.onLine
+          ? "Inventaire clôturé. Il doit maintenant être validé par l'agent puis approuvé par l'administrateur."
+          : "Inventaire clôturé sur cet appareil. Il sera envoyé automatiquement au retour du réseau.", 'success');
         if(currentServanteId === servanteId) setTimeout(()=>renderServanteDetail(servanteId), 250);
       }catch(err){
         btn.disabled = false; btn.textContent = 'Confirmer et clôturer';
@@ -4235,6 +4391,11 @@ function openInventaireEditor(servanteId, invId, invData, opts){
       }
     });
   });
+
+  // --- indicateur de connexion
+  const majReseau = ()=>{ const b = $('#inv-offline'); if(b) b.style.display = navigator.onLine ? 'none' : 'block'; };
+  window.addEventListener('online', majReseau); window.addEventListener('offline', majReseau);
+  majReseau();
 
   // --- initialisation de l'affichage
   drawTrop();
@@ -4278,15 +4439,29 @@ async function validerInventaireAdmin(inventaireId, servanteId){
       showToast("L'agent doit d'abord valider cet inventaire avant l'approbation de l'administrateur.", 'warning');
       return;
     }
+    if(securiteCache.separationTaches && (inv.realiseParMatricule === currentUser.matricule || inv.clotureParMatricule === currentUser.matricule)){
+      showToast("Séparation des tâches : vous avez réalisé cet inventaire, un autre administrateur doit l'approuver.", 'warning');
+      return;
+    }
     const nonConformes = (inv.resultats||[]).filter(r=>r.resultat!=='Conforme');
     const typeMap = { 'Manquant':'manquant', 'Cassé':'casse', 'Usé':'usure' };
 
     let newOutilsAssignes = (s.outilsAssignes||[]);
     for(const r of nonConformes){
-      newOutilsAssignes = newOutilsAssignes.map(t => t.localId===r.localId ? {...t, actif:false, etat:r.resultat} : t);
+      const attendue = r.quantiteAttendue || 1;
+      const trouvee = Math.max(0, Math.min(attendue, Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : 0));
+      const enEcart = attendue - trouvee;
+      if(trouvee > 0 && enEcart > 0){
+        // une partie seulement est en écart : le reste reste en service
+        newOutilsAssignes = newOutilsAssignes.map(t => t.localId===r.localId ? {...t, quantite: trouvee} : t);
+      } else {
+        newOutilsAssignes = newOutilsAssignes.map(t => t.localId===r.localId ? {...t, actif:false, etat:r.resultat} : t);
+      }
       await logMouvement({
+        quantite: enEcart || attendue,
         servanteId, outilId: r.outilId, reference: r.reference, designation: r.designation,
         type: typeMap[r.resultat] || 'manquant',
+        inventaireId,
         motif: `Constaté lors de l'inventaire du ${formatDate(inv.dateInventaire)}${r.commentaire ? ' — ' + r.commentaire : ''}`
       }, { preValide: true });
     }
@@ -4294,6 +4469,7 @@ async function validerInventaireAdmin(inventaireId, servanteId){
       await logMouvement({
         servanteId, outilId: e.outilId || null, reference: e.reference || '—', designation: e.designation,
         type: 'en_trop',
+        inventaireId,
         motif: `Outil en trop trouvé lors de l'inventaire du ${formatDate(inv.dateInventaire)}${e.commentaire ? ' — ' + e.commentaire : ''}`
       }, { preValide: true });
     }
@@ -4316,6 +4492,427 @@ async function validerInventaireAdmin(inventaireId, servanteId){
   }catch(err){
     showToast("Erreur lors de la validation : " + err.message, 'error');
   }
+}
+
+/* ============ REMPLACEMENT, INDICATEURS, EXPORTS EXCEL ============ */
+function mouvementARemplacer(m){
+  return m.valideParAgent && m.valideParAdmin && !m.annule && ['casse','usure','manquant'].includes(m.type) && m.remplace !== true;
+}
+function piecesEnEcart(r){
+  const att = r.quantiteAttendue || 1;
+  if(r.resultat === 'Conforme') return 0;
+  const ok = Math.max(0, Math.min(att, Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : 0));
+  return att - ok;
+}
+
+function calculerIndicateurs(){
+  const valides = inventairesAllCache.filter(i => !i.brouillon && !i.annule && i.valideParAgent && i.valideParAdmin);
+  let pointes = 0, ecarts = 0, enTrop = 0;
+  const parGarage = {}, parOutil = {};
+  valides.forEach(inv => {
+    const sv = servantesCache.find(s=>s.id===inv.servanteId) || {};
+    const g = sv.garage || inv.garage || 'Non renseigné';
+    const p = parGarage[g] = parGarage[g] || { pointes:0, ecarts:0, inventaires:0 };
+    p.inventaires++;
+    (inv.resultats||[]).forEach(r => {
+      const att = r.quantiteAttendue || 1;
+      const bad = piecesEnEcart(r);
+      pointes += att; ecarts += bad; p.pointes += att; p.ecarts += bad;
+      if(bad > 0) parOutil[r.designation] = (parOutil[r.designation]||0) + bad;
+    });
+    enTrop += (inv.enTrop||[]).length;
+  });
+  const aRemplacer = mouvementsAllCache.filter(mouvementARemplacer);
+  return {
+    nbInventaires: valides.length, pointes, ecarts, enTrop,
+    taux: pointes ? (pointes - ecarts) / pointes : null,
+    parGarage: Object.entries(parGarage).map(([g,v]) => ({ garage:g, ...v, taux: v.pointes ? (v.pointes - v.ecarts)/v.pointes : null })).sort((a,b)=> (a.taux??1) - (b.taux??1)),
+    topOutils: Object.entries(parOutil).sort((a,b)=>b[1]-a[1]).slice(0,5),
+    nbARemplacer: aRemplacer.reduce((n,m)=> n + (m.quantite||1), 0)
+  };
+}
+function indicateursHtml(){
+  const k = calculerIndicateurs();
+  const pct = (x) => x === null ? '—' : Math.round(x*100) + ' %';
+  const couleur = (x) => x === null ? 'var(--steel)' : (x >= 0.95 ? '#00863f' : (x >= 0.85 ? '#8f6412' : '#d64545'));
+  const tile = (label, value, color) => `<div class="panel" style="padding:14px 16px;"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--steel);">${label}</div><div style="font-size:26px;font-weight:800;color:${color||'inherit'};margin-top:4px;">${value}</div></div>`;
+  return `
+    <div class="section-label">Indicateurs de conformité</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px;">
+      ${tile('Taux de conformité', pct(k.taux), couleur(k.taux))}
+      ${tile('Inventaires validés', k.nbInventaires)}
+      ${tile('Pièces en écart', k.ecarts, k.ecarts ? '#d64545' : '')}
+      ${tile('Outils en trop trouvés', k.enTrop)}
+      ${tile('À remplacer', k.nbARemplacer + ' pièce' + (k.nbARemplacer>1?'s':''), k.nbARemplacer ? '#8f6412' : '')}
+    </div>
+    ${k.parGarage.length || k.topOutils.length ? `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:18px;">
+      <div class="panel" style="padding:14px 16px;">
+        <b style="font-size:13px;">Conformité par garage</b>
+        ${k.parGarage.map(g => `
+          <div style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);">
+            <span>${escapeHtml(g.garage)} <span style="color:var(--steel);">(${g.inventaires} inv.)</span></span>
+            <b style="color:${couleur(g.taux)};">${pct(g.taux)}</b>
+          </div>`).join('') || '<p style="font-size:12.5px;color:var(--steel);">Aucun inventaire validé.</p>'}
+      </div>
+      <div class="panel" style="padding:14px 16px;">
+        <b style="font-size:13px;">Outils les plus souvent en écart</b>
+        ${k.topOutils.map(([n,c]) => `
+          <div style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);">
+            <span>${escapeHtml(n)}</span><b>${c}</b>
+          </div>`).join('') || '<p style="font-size:12.5px;color:var(--steel);">Aucun écart.</p>'}
+      </div>
+    </div>` : ''}`;
+}
+
+/* ---- Exports Excel ---- */
+async function exporterExcel(nomFichier, feuilles){
+  try{
+    const XLSX = await loadSheetJS();
+    const wb = XLSX.utils.book_new();
+    feuilles.forEach(f => {
+      const ws = XLSX.utils.aoa_to_sheet([f.entetes, ...f.lignes]);
+      ws['!cols'] = f.entetes.map((h,i)=>({ wch: Math.min(60, Math.max(String(h).length + 2, ...f.lignes.slice(0,200).map(l=>String(l[i] ?? '').length + 2))) }));
+      XLSX.utils.book_append_sheet(wb, ws, f.nom.slice(0,31));
+    });
+    XLSX.writeFile(wb, nomFichier);
+    showToast("Fichier Excel généré.", 'success');
+  }catch(err){ showToast("Erreur lors de l'export : " + err.message, 'error'); }
+}
+const dateCourte = (iso) => iso ? formatDate(iso).split(' à ')[0] : '';
+const nomServante = (id) => { const s = servantesCache.find(x=>x.id===id) || {}; return { numero: s.agentMatricule || '', agent: s.agentNom || '', garage: s.garage || '' }; };
+
+function exporterHistoriqueExcel(){
+  const inv = inventairesAllCache.filter(i => !i.brouillon).sort((a,b)=> new Date(b.dateInventaire) - new Date(a.dateInventaire));
+  const lignesInv = [], lignesEcarts = [], lignesTrop = [];
+  inv.forEach(i => {
+    const sv = nomServante(i.servanteId);
+    const statut = i.annule ? 'Annulé' : (i.valideParAgent && i.valideParAdmin ? 'Validé' : (i.valideParAgent ? 'Validé agent, à approuver' : 'À valider'));
+    const ecartsPieces = (i.resultats||[]).reduce((n,r)=> n + piecesEnEcart(r), 0);
+    lignesInv.push([dateCourte(i.dateInventaire), sv.numero, sv.agent, sv.garage, i.realiseParNom||'',
+      (i.resultats||[]).reduce((n,r)=>n+(r.quantiteAttendue||1),0), ecartsPieces, (i.enTrop||[]).length,
+      i.valideParAgentNom||'', i.valideParAdminNom||'', statut, i.annule ? (i.motifAnnulation||'') : '']);
+    (i.resultats||[]).filter(r=>r.resultat && r.resultat!=='Conforme').forEach(r => {
+      lignesEcarts.push([dateCourte(i.dateInventaire), sv.numero, sv.agent, sv.garage, r.designation, r.reference, r.resultat,
+        r.quantiteAttendue||1, piecesEnEcart(r),
+        r.commentaire||'', r.photoUrl||'', statut]);
+    });
+    (i.enTrop||[]).forEach(e => lignesTrop.push([dateCourte(i.dateInventaire), sv.numero, sv.agent, sv.garage, e.designation, e.reference||'', e.commentaire||'', e.photoUrl||'', statut]));
+  });
+  const mv = mouvementsAllCache.slice().sort((a,b)=> new Date(b.date) - new Date(a.date)).map(m => {
+    const sv = nomServante(m.servanteId);
+    return [dateCourte(m.date), sv.numero, sv.agent, sv.garage, (MVT_TYPES[m.type]||{label:m.type}).label, m.designation||'', m.reference||'',
+      m.quantite||1, m.motif||'', m.utilisateurNom||'', m.valideParAgentNom||'', m.valideParAdminNom||'',
+      m.annule ? 'Annulé : ' + (m.motifAnnulation||'') : (m.valideParAgent && m.valideParAdmin ? 'Validé' : 'En attente'), m.remplace ? 'Oui' : ''];
+  });
+  exporterExcel(`inventaires_servantes_${new Date().toISOString().slice(0,10)}.xlsx`, [
+    { nom:'Inventaires', entetes:['Date','N° servante','Agent','Garage','Réalisé par','Pièces attendues','Pièces en écart','Outils en trop','Validé par l\'agent','Approuvé par l\'admin','Statut','Motif d\'annulation'], lignes: lignesInv },
+    { nom:'Écarts', entetes:['Date','N° servante','Agent','Garage','Outil','Référence','Résultat','Quantité attendue','Pièces en écart','Commentaire','Photo','Statut'], lignes: lignesEcarts },
+    { nom:'Outils en trop', entetes:['Date','N° servante','Agent','Garage','Désignation','Référence','Commentaire','Photo','Statut'], lignes: lignesTrop },
+    { nom:'Mouvements', entetes:['Date','N° servante','Agent','Garage','Type','Outil','Référence','Quantité','Motif','Par','Validé agent','Approuvé admin','Statut','Remplacé'], lignes: mv }
+  ]);
+}
+function exporterARemplacerExcel(){
+  const lignes = mouvementsAllCache.filter(mouvementARemplacer).sort((a,b)=> new Date(a.date) - new Date(b.date)).map(m => {
+    const sv = nomServante(m.servanteId);
+    return [dateCourte(m.date), sv.numero, sv.agent, sv.garage, m.designation||'', m.reference||'', (MVT_TYPES[m.type]||{label:m.type}).label, m.quantite||1,
+      m.motif||''];
+  });
+  exporterExcel(`a_remplacer_${new Date().toISOString().slice(0,10)}.xlsx`, [
+    { nom:'À remplacer', entetes:['Date','N° servante','Agent','Garage','Outil','Référence','État','Quantité','Motif'], lignes }
+  ]);
+}
+function exporterDotationExcel(servanteId){
+  const s = servantesCache.find(x=>x.id===servanteId); if(!s) return;
+  const lignes = (s.outilsAssignes||[]).map(t => [t.designation, t.reference, t.categorie||'', t.quantite||1, t.numeroSerie||'',
+    t.actif ? 'En service' : (t.etat||'Retiré'), dateCourte(t.dateAttribution)]);
+  exporterExcel(`dotation_servante_${s.agentMatricule||'disponible'}_${new Date().toISOString().slice(0,10)}.xlsx`, [
+    { nom:'Dotation', entetes:['Désignation','Référence','Catégorie','Quantité','N° de série','État','Attribué le'], lignes }
+  ]);
+}
+
+/* ---- Liste « À remplacer » ---- */
+function renderJournalARemplacer(){
+  const content = document.getElementById('journal-tab-content');
+  const liste = mouvementsAllCache.filter(mouvementARemplacer).sort((a,b)=> new Date(a.date) - new Date(b.date));
+  const garages = [...new Set(liste.map(m => nomServante(m.servanteId).garage).filter(Boolean))].sort();
+  content.innerHTML = `
+    <div class="toolbar">
+      <input type="text" id="rem-search" placeholder="Rechercher un outil, un agent, une référence…">
+      <select id="rem-garage"><option value="">Tous garages</option>${garages.map(g=>`<option>${escapeHtml(g)}</option>`).join('')}</select>
+      <button class="btn btn-secondary" id="rem-export">Exporter Excel</button>
+    </div>
+    <p style="font-size:13px;color:var(--steel);margin:0 0 10px;"><b id="rem-count">${liste.length}</b> ligne(s) à remplacer</p>
+    <div class="panel"><div class="table-wrap"><table>
+      <thead><tr><th>Date</th><th>Servante n°</th><th>Agent</th><th>Garage</th><th>Outil</th><th>État</th><th>Qté</th><th></th></tr></thead>
+      <tbody id="rem-tbody"></tbody>
+    </table></div>
+    <div id="rem-empty" class="empty-state" style="display:none;"><p>Rien à remplacer pour le moment.</p></div></div>`;
+  function draw(){
+    const f = document.getElementById('rem-search').value.trim().toLowerCase();
+    const g = document.getElementById('rem-garage').value;
+    const rows = liste.filter(m => {
+      const sv = nomServante(m.servanteId);
+      if(g && sv.garage !== g) return false;
+      if(f && ![m.designation, m.reference, sv.agent, sv.numero].join(' ').toLowerCase().includes(f)) return false;
+      return true;
+    });
+    document.getElementById('rem-tbody').innerHTML = rows.map(m => {
+      const sv = nomServante(m.servanteId);
+      const info = MVT_TYPES[m.type] || { label:m.type, color:'gray' };
+      return `<tr>
+        <td class="mono">${dateCourte(m.date)}</td><td class="mono">${escapeHtml(sv.numero||'—')}</td><td>${escapeHtml(sv.agent||'—')}</td><td>${escapeHtml(sv.garage||'—')}</td>
+        <td>${escapeHtml(m.designation||'')}<div class="mono" style="font-size:11.5px;color:var(--steel);">${escapeHtml(m.reference||'')}</div></td>
+        <td><span class="pill pill-${info.color==='gray'?'gray':(info.color==='amber'?'amber':'red')}">${escapeHtml(info.label)}</span></td>
+        <td>${m.quantite||1}</td>
+        <td><button class="btn btn-primary btn-sm" data-remplacer="${m.id}">Marquer remplacé</button></td>
+      </tr>`;
+    }).join('');
+    document.getElementById('rem-empty').style.display = rows.length ? 'none' : 'block';
+    document.querySelectorAll('[data-remplacer]').forEach(b => b.addEventListener('click', ()=>ouvrirRemplacement(b.dataset.remplacer)));
+  }
+  draw();
+  document.getElementById('rem-search').addEventListener('input', draw);
+  document.getElementById('rem-garage').addEventListener('change', draw);
+  document.getElementById('rem-export').addEventListener('click', exporterARemplacerExcel);
+}
+
+function ouvrirRemplacement(mvtId){
+  const m = mouvementsAllCache.find(x=>x.id===mvtId); if(!m) return;
+  const s = servantesCache.find(x=>x.id===m.servanteId);
+  const qte = m.quantite || 1;
+  openModal(`
+    <div class="modal-head"><h3>Marquer comme remplacé</h3><button class="modal-close" id="m-close">&times;</button></div>
+    <p style="font-size:13px;color:var(--steel);margin-bottom:12px;"><b>${escapeHtml(m.designation||'')}</b> (${escapeHtml(m.reference||'')}) — ${qte} pièce${qte>1?'s':''} · ${escapeHtml((MVT_TYPES[m.type]||{label:m.type}).label)} le ${dateCourte(m.date)}</p>
+    <div class="modal-error" id="rem-error"></div>
+    <div class="checkbox-row" style="margin-bottom:10px;">
+      <input type="checkbox" id="rem-reattribuer" ${s ? 'checked' : 'disabled'}>
+      <label for="rem-reattribuer">Remettre ${qte>1?`les ${qte} pièces neuves`:'la pièce neuve'} en dotation dans la servante ${s ? '(n° ' + escapeHtml(s.agentMatricule||'—') + ')' : '(introuvable)'}</label>
+    </div>
+    <p style="font-size:12px;color:var(--steel);margin-bottom:12px;">Décochez si le remplacement a déjà été enregistré ailleurs : la ligne sera simplement retirée de la liste.</p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" id="m-cancel">Annuler</button>
+      <button type="button" class="btn btn-primary" id="rem-ok">Confirmer</button>
+    </div>`);
+  document.getElementById('m-close').addEventListener('click', closeModal);
+  document.getElementById('m-cancel').addEventListener('click', closeModal);
+  document.getElementById('rem-ok').addEventListener('click', async ()=>{
+    const btn = document.getElementById('rem-ok'); btn.disabled = true;
+    try{
+      await updateDoc(doc(db,'mouvements',mvtId), {
+        remplace: true, remplaceLe: nowIso(),
+        remplaceParNom: `${currentUser.prenom} ${currentUser.nom}`, remplaceParMatricule: currentUser.matricule
+      });
+      if(document.getElementById('rem-reattribuer').checked && s){
+        const outils = (s.outilsAssignes||[]).slice();
+        const idx = outils.findIndex(t => t.actif && t.outilId === m.outilId);
+        if(idx >= 0) outils[idx] = { ...outils[idx], quantite: (outils[idx].quantite||1) + qte };
+        else outils.push({ localId: uid(), outilId: m.outilId || null, reference: m.reference, designation: m.designation,
+          categorie: (outilsCache.find(o=>o.id===m.outilId)||{}).categorie || '', quantite: qte, numeroSerie: '',
+          dateAttribution: nowIso(), actif: true, etat: 'En service' });
+        await updateDoc(doc(db,'servantes',s.id), { outilsAssignes: outils });
+        await logMouvement({ servanteId: s.id, outilId: m.outilId || null, reference: m.reference, designation: m.designation,
+          type: 'remplacement', quantite: qte, motif: `Remplacement suite à : ${(MVT_TYPES[m.type]||{label:m.type}).label} du ${dateCourte(m.date)}` }, { preValide: true });
+      }
+      closeModal();
+      showToast("Remplacement enregistré.", 'success');
+      if(currentView === 'journal') setTimeout(()=>renderJournalInventairesView(), 350);
+    }catch(err){
+      const e = document.getElementById('rem-error'); e.textContent = err.message; e.style.display = 'block'; btn.disabled = false;
+    }
+  });
+}
+
+/* ---- Modification d'une ligne de dotation (quantité, n° de série) ---- */
+function openModifierDotationModal(servanteId, localId){
+  const s = servantesCache.find(x=>x.id===servanteId); if(!s) return;
+  const t = (s.outilsAssignes||[]).find(x=>x.localId===localId); if(!t) return;
+  openModal(`
+    <div class="modal-head"><h3>${escapeHtml(t.designation)}</h3><button class="modal-close" id="m-close">&times;</button></div>
+    <p style="font-size:12.5px;color:var(--steel);margin-bottom:12px;">${escapeHtml(t.reference)}</p>
+    <div class="modal-error" id="dot-error"></div>
+    <div class="field-row">
+      <div class="field"><label>Quantité</label><input type="number" id="dot-qte" min="1" step="1" value="${t.quantite||1}"></div>
+      <div class="field"><label>N° de série (optionnel)</label><input type="text" id="dot-serie" value="${escapeHtml(t.numeroSerie||'')}"></div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" id="m-cancel">Annuler</button>
+      <button type="button" class="btn btn-primary" id="dot-ok">Enregistrer</button>
+    </div>`);
+  document.getElementById('m-close').addEventListener('click', closeModal);
+  document.getElementById('m-cancel').addEventListener('click', closeModal);
+  document.getElementById('dot-ok').addEventListener('click', async ()=>{
+    const q = parseInt(document.getElementById('dot-qte').value, 10);
+    if(!Number.isFinite(q) || q < 1){ const e = document.getElementById('dot-error'); e.textContent = "La quantité doit être au moins 1."; e.style.display = 'block'; return; }
+    try{
+      const outils = (s.outilsAssignes||[]).map(x => x.localId===localId ? { ...x, quantite: q, numeroSerie: sanitizeInput(document.getElementById('dot-serie').value) } : x);
+      await updateDoc(doc(db,'servantes',servanteId), { outilsAssignes: outils });
+      closeModal();
+    }catch(err){ const e = document.getElementById('dot-error'); e.textContent = err.message; e.style.display = 'block'; }
+  });
+}
+
+/* ============ CORRECTIONS (mode test) ET ANNULATIONS MOTIVÉES ============
+   - Avant validation : l'administrateur peut rouvrir ou supprimer.
+   - Après validation, en production : « Annuler avec un motif » (l'élément reste
+     dans l'historique, barré et expliqué, ses effets sont défaits).
+   - Mode test (réglage Paramètres) : tout peut être rouvert ou supprimé pour tester. */
+function legacyMouvementLie(m, inv){
+  return !m.inventaireId && ['manquant','casse','usure','en_trop'].includes(m.type)
+    && (m.motif||'').includes(formatDate(inv.dateInventaire));
+}
+function refreshAfterCorrection(servanteId){
+  setTimeout(()=>{
+    if(currentView === 'journal') renderJournalInventairesView();
+    else if(servanteId && (currentServanteId === servanteId || currentUser.role === 'agent')) renderServanteDetail(servanteId);
+  }, 400);
+}
+function demanderMotif(titre, intro, confirmLabel, onSubmit){
+  openModal(`
+    <div class="modal-head"><h3>${escapeHtml(titre)}</h3><button class="modal-close" id="m-close">&times;</button></div>
+    <p style="font-size:13px;color:var(--steel);margin-bottom:10px;">${intro}</p>
+    <div class="modal-error" id="motif-error"></div>
+    <div class="field"><label>Motif (obligatoire)</label>
+      <textarea id="motif-text" rows="3" placeholder="Ex : erreur de saisie, mauvaise servante pointée…"></textarea></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" id="m-cancel">Retour</button>
+      <button type="button" class="btn btn-danger" id="motif-ok">${escapeHtml(confirmLabel)}</button>
+    </div>`);
+  document.getElementById('m-close').addEventListener('click', closeModal);
+  document.getElementById('m-cancel').addEventListener('click', closeModal);
+  document.getElementById('motif-ok').addEventListener('click', async ()=>{
+    const motif = sanitizeInput(document.getElementById('motif-text').value);
+    const err = document.getElementById('motif-error');
+    if(motif.length < 5){ err.textContent = "Expliquez brièvement le motif (5 caractères minimum)."; err.style.display = 'block'; return; }
+    try{ await onSubmit(motif); closeModal(); }
+    catch(e){ err.textContent = e.message; err.style.display = 'block'; }
+  });
+}
+const champsAnnulation = (motif) => ({
+  annule: true, motifAnnulation: motif,
+  annuleParNom: `${currentUser.prenom} ${currentUser.nom}`, annuleParMatricule: currentUser.matricule, annuleLe: nowIso()
+});
+
+// Défait les effets d'un inventaire validé : outils remis en service, mouvements liés supprimés (ou annulés), dernier inventaire recalculé.
+async function annulerEffetsInventaire(inv, supprimerMouvements, motif){
+  const servanteId = inv.servanteId;
+  const s = servantesCache.find(x=>x.id===servanteId);
+  if(s){
+    const outils = (s.outilsAssignes||[]).map(t=>{
+      const r = (inv.resultats||[]).find(x=>x.localId===t.localId && x.resultat && x.resultat!=='Conforme');
+      if(!r) return t;
+      const back = { ...t, actif:true, etat:'En service' };
+      if(r.quantiteAttendue) back.quantite = r.quantiteAttendue;
+      return back;
+    });
+    await updateDoc(doc(db,'servantes',servanteId), { outilsAssignes: outils });
+  }
+  const lies = mouvementsAllCache.filter(m => m.servanteId===servanteId && (m.inventaireId===inv.id || legacyMouvementLie(m, inv)));
+  for(const m of lies){
+    if(supprimerMouvements) await deleteDoc(doc(db,'mouvements',m.id));
+    else await updateDoc(doc(db,'mouvements',m.id), champsAnnulation(motif || "Inventaire annulé"));
+  }
+  const autres = inventairesAllCache
+    .filter(i => i.servanteId===servanteId && i.id!==inv.id && i.valideParAdmin && !i.brouillon && !i.annule)
+    .sort((a,b)=> new Date(b.dateInventaire) - new Date(a.dateInventaire));
+  await updateDoc(doc(db,'servantes',servanteId), {
+    dernierInventaire: autres[0] ? { date: autres[0].dateInventaire, inventaireId: autres[0].id } : null
+  });
+}
+
+function corrigerInventaireSupprimer(invId){
+  const inv = inventairesAllCache.find(i=>i.id===invId); if(!inv) return;
+  const valide = inv.valideParAdmin === true;
+  if(valide && !modeTestActif()){
+    demanderMotif("Annuler cet inventaire",
+      "Cet inventaire est <b>validé</b>. Il restera dans l'historique, barré, avec votre motif. Ses effets seront défaits : outils remis en service, mouvements liés annulés.",
+      "Annuler l'inventaire", async (motif)=>{
+        await annulerEffetsInventaire(inv, false, motif);
+        await updateDoc(doc(db,'inventaires',invId), champsAnnulation(motif));
+        showToast("Inventaire annulé.", 'success');
+        refreshAfterCorrection(inv.servanteId);
+      });
+    return;
+  }
+  showConfirmModal(valide
+      ? "Cet inventaire est validé. Le supprimer annulera aussi ses effets (outils remis en service, mouvements liés supprimés). Continuer ?"
+      : "Supprimer définitivement cet inventaire ?", async ()=>{
+    try{
+      if(valide) await annulerEffetsInventaire(inv, true);
+      await deleteDoc(doc(db,'inventaires',invId));
+      showToast("Inventaire supprimé.", 'success');
+    }catch(err){ showToast("Erreur : " + err.message, 'error'); }
+    refreshAfterCorrection(inv.servanteId);
+  }, { title:"Supprimer l'inventaire", confirmLabel:'Supprimer', danger:true });
+}
+
+function corrigerInventaireRouvrir(invId){
+  const inv = inventairesAllCache.find(i=>i.id===invId); if(!inv) return;
+  const valide = inv.valideParAdmin === true;
+  if(valide && !modeTestActif()){
+    showToast("Un inventaire validé ne peut plus être rouvert. Annulez-le avec un motif, puis refaites-le.", 'warning'); return;
+  }
+  const draft = findDraftInventaire(inv.servanteId);
+  if(draft && draft.id !== invId){
+    showToast("Un inventaire est déjà en cours pour cette servante : terminez-le ou abandonnez-le d'abord.", 'warning'); return;
+  }
+  showConfirmModal(valide
+      ? "Rouvrir cet inventaire validé pour le corriger ? Ses effets seront défaits et les validations retirées."
+      : "Rouvrir cet inventaire pour le corriger ? Les validations déjà données seront retirées.", async ()=>{
+    try{
+      if(valide) await annulerEffetsInventaire(inv, true);
+      const reset = {
+        brouillon:true, termineLe:null,
+        valideParAgent:false, valideParAgentMatricule:null, valideParAgentNom:null, valideParAgentLe:null,
+        valideParAdmin:false, valideParAdminMatricule:null, valideParAdminNom:null, valideParAdminLe:null
+      };
+      await updateDoc(doc(db,'inventaires',invId), reset);
+      openInventaireEditor(inv.servanteId, invId, { ...inv, ...reset });
+    }catch(err){ showToast("Erreur : " + err.message, 'error'); }
+  }, { title:"Rouvrir l'inventaire", confirmLabel:'Rouvrir', danger:false });
+}
+
+function corrigerMouvementSupprimer(mvtId){
+  const m = mouvementsAllCache.find(x=>x.id===mvtId); if(!m) return;
+  const valide = m.valideParAdmin === true;
+  if(valide && !modeTestActif()){
+    demanderMotif("Annuler ce mouvement",
+      "Ce mouvement est <b>validé</b>. Il restera dans l'historique, barré, avec votre motif.",
+      "Annuler le mouvement", async (motif)=>{
+        await updateDoc(doc(db,'mouvements',mvtId), champsAnnulation(motif));
+        showToast("Mouvement annulé.", 'success');
+        refreshAfterCorrection(m.servanteId);
+      });
+    return;
+  }
+  showConfirmModal("Supprimer ce mouvement de l'historique ? (L'état actuel de l'outil dans la servante n'est pas modifié : utilisez « Remettre en service » si besoin.)", async ()=>{
+    try{ await deleteDoc(doc(db,'mouvements',mvtId)); showToast("Mouvement supprimé.", 'success'); }
+    catch(err){ showToast("Erreur : " + err.message, 'error'); }
+    refreshAfterCorrection(m.servanteId);
+  }, { title:'Supprimer le mouvement', confirmLabel:'Supprimer', danger:true });
+}
+
+function corrigerServanteSupprimer(servanteId){
+  const s = servantesCache.find(x=>x.id===servanteId); if(!s) return;
+  showConfirmModal(`Supprimer la servante n° ${s.agentMatricule || '—'} (${s.agentNom || 'disponible'}) avec TOUS ses inventaires et mouvements ? Cette action est irréversible (mode test).`, async ()=>{
+    try{
+      for(const i of inventairesAllCache.filter(x=>x.servanteId===servanteId)) await deleteDoc(doc(db,'inventaires',i.id));
+      for(const m of mouvementsAllCache.filter(x=>x.servanteId===servanteId)) await deleteDoc(doc(db,'mouvements',m.id));
+      await deleteDoc(doc(db,'servantes',servanteId));
+      showToast("Servante supprimée.", 'success');
+      currentServanteId = null;
+      renderCurrentView();
+    }catch(err){ showToast("Erreur : " + err.message, 'error'); }
+  }, { title:'Supprimer la servante', confirmLabel:'Supprimer définitivement', danger:true });
+}
+
+async function remettreOutilEnService(servanteId, localId){
+  const s = servantesCache.find(x=>x.id===servanteId); if(!s) return;
+  try{
+    const outils = (s.outilsAssignes||[]).map(t => t.localId===localId ? { ...t, actif:true, etat:'En service' } : t);
+    await updateDoc(doc(db,'servantes',servanteId), { outilsAssignes: outils });
+    showToast("Outil remis en service.", 'success');
+  }catch(err){ showToast("Erreur : " + err.message, 'error'); }
 }
 
 /* ============ MODÈLE DE DOTATION TYPE ============ */
@@ -4455,8 +5052,10 @@ function openAssignToolModal(servanteId){
     const outil = outilsCache.find(o=>o.id===outilId);
     const s = servantesCache.find(x=>x.id===servanteId);
     const localId = uid();
+    const qteAttr = Math.max(1, parseInt(document.getElementById('assign-qte').value, 10) || 1);
     const entry = {
       localId, outilId, reference: outil.reference, designation: outil.designation, categorie: outil.categorie,
+      quantite: qteAttr, numeroSerie: sanitizeInput(document.getElementById('assign-serie').value),
       dateAttribution: nowIso(), actif: true, etat: 'En service'
     };
     try{
@@ -4464,7 +5063,7 @@ function openAssignToolModal(servanteId){
       await updateDoc(doc(db,'servantes',servanteId), { outilsAssignes: updated });
       await logMouvement({
         servanteId, outilId, reference: outil.reference, designation: outil.designation,
-        type: 'attribution', motif: ''
+        type: 'attribution', quantite: qteAttr, motif: ''
       });
       closeModal();
     }catch(err){
@@ -4493,6 +5092,9 @@ function openMouvementModal(servanteId, localId, type){
     <div class="modal-error" id="mvt-modal-error"></div>
     <form id="mvt-form">
       <p style="font-size:13px;color:var(--steel);margin-bottom:14px;">${escapeHtml(tool.reference)} · en dotation depuis le ${formatDate(tool.dateAttribution)}</p>
+      ${(tool.quantite||1) > 1 ? `
+      <div class="field"><label>Quantité concernée (sur ${tool.quantite})</label>
+        <input type="number" id="mvt-qte" min="1" max="${tool.quantite}" step="1" value="${tool.quantite}"></div>` : ''}
       ${needsReplacement ? `
       <div class="field">
         <label>Nouvel outil de remplacement</label>
@@ -4518,13 +5120,17 @@ function openMouvementModal(servanteId, localId, type){
     const errEl = document.getElementById('mvt-modal-error');
     const motif = sanitizeInput(document.getElementById('mvt-motif').value);
     try{
+      const total = tool.quantite || 1;
+      const qteEl = document.getElementById('mvt-qte');
+      const qteMvt = qteEl ? Math.min(total, Math.max(1, parseInt(qteEl.value, 10) || total)) : total;
       let newOutilsAssignes = (s.outilsAssignes||[]).map(t=>{
         if(t.localId !== localId) return t;
+        if(qteMvt < total) return { ...t, quantite: total - qteMvt };   // une partie seulement : le reste reste en service
         return { ...t, actif:false, etat: info.label };
       });
       let mvtPayload = {
         servanteId, outilId: tool.outilId, reference: tool.reference, designation: tool.designation,
-        type, motif
+        type, quantite: qteMvt, motif
       };
       if(needsReplacement){
         const newOutilId = document.getElementById('mvt-nouvel-outil').value;
@@ -4532,7 +5138,7 @@ function openMouvementModal(servanteId, localId, type){
         const newOutil = outilsCache.find(o=>o.id===newOutilId);
         const newEntry = {
           localId: uid(), outilId: newOutil.id, reference: newOutil.reference, designation: newOutil.designation,
-          categorie: newOutil.categorie, dateAttribution: nowIso(), actif:true, etat:'En service'
+          categorie: newOutil.categorie, quantite: qteMvt, numeroSerie: '', dateAttribution: nowIso(), actif:true, etat:'En service'
         };
         newOutilsAssignes = [...newOutilsAssignes, newEntry];
         mvtPayload.ancienOutilId = tool.outilId;
