@@ -1209,6 +1209,7 @@ function attachListeners(){
   });
   onSnapshot(collection(db,'servantes'), (snap)=>{
     servantesCache = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    if(!rappelsAnnonces){ rappelsAnnonces = true; annoncerRappelsInventaire(); }
     if(currentUser.role==='agent' && currentView==='servantes' && !currentServanteId){
       currentServanteId = myServanteId();
     }
@@ -1573,6 +1574,10 @@ function openAgentModal(matricule){
         const updates = { nom, prenom, garage, equipe, statut, role, permissions };
         if(pw) updates.mustChangePassword = true;
         await updateDoc(doc(db,'agents',matriculeVal), updates);
+        if(a.garage !== garage){
+          const sv = servantesCache.find(x => x.agentMatricule === matriculeVal);
+          if(sv) await changerGarageServante(sv, garage, true);
+        }
         if((a.statut === 'Inactif') !== (statut === 'Inactif')){
           await svAdmin('/disable', { matricule: matriculeVal, disabled: statut === 'Inactif' });
         }
@@ -2572,6 +2577,23 @@ function inventoryStatus(dueIso){
   return { level:'ok', label:`Dans ${diffDays} j` };
 }
 
+let rappelsAnnonces = false;
+/* Rappel à l'ouverture : inventaires en retard ou à faire dans les 30 jours (cycle annuel ou date programmée). */
+function annoncerRappelsInventaire(){
+  try{
+    const mesServantes = currentUser.role === 'agent'
+      ? servantesCache.filter(x => x.agentMatricule === currentUser.matricule)
+      : ((canManageServantes() || hasPermission('adminApproval')) ? servantesCache : []);
+    const st = mesServantes.map(x => inventoryStatus(getNextInventoryDue(x).date).level);
+    const retard = st.filter(l => l === 'retard').length, bientot = st.filter(l => l === 'bientot').length;
+    if(!retard && !bientot) return;
+    const parts = [];
+    if(retard) parts.push(`${retard} inventaire${retard>1?'s':''} en retard`);
+    if(bientot) parts.push(`${bientot} à faire dans les 30 jours`);
+    showToast('🔔 Rappel : ' + parts.join(' · ') + (currentUser.role === 'agent' ? '.' : ' (voir le Tableau de bord).'), retard ? 'warning' : 'info');
+  }catch(e){}
+}
+
 function inventoryStatusPill(servante){
   const due = getNextInventoryDue(servante);
   const status = inventoryStatus(due.date);
@@ -2704,11 +2726,18 @@ function renderDashboardGlobal(main){
             </div>`).join('')}
         </div>
       </div>` : ''}
+    ${bientot.length ? `
+      <div class="panel" style="border-color:var(--amber);background:var(--amber-pale);padding:14px 18px;margin-bottom:16px;">
+        <b style="color:#8A6412;">🔔 ${bientot.length} inventaire${bientot.length>1?'s':''} à faire dans les 30 jours</b>
+        <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;">
+          ${bientot.map(x=>`<span class="pill pill-amber" style="cursor:pointer;" data-goto-servante="${x.s.id}">${escapeHtml(x.s.agentNom || 'Servante disponible')} — ${x.status.label}</span>`).join('')}
+        </div>
+      </div>` : ''}
     ${enRetard.length ? `
       <div class="panel" style="border-color:var(--red);background:var(--red-pale);padding:14px 18px;margin-bottom:20px;">
         <b style="color:var(--red);">⚠ ${enRetard.length} servante${enRetard.length>1?'s':''} en retard d'inventaire</b>
         <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">
-          ${enRetard.map(x=>`<span class="pill pill-red" style="cursor:pointer;" data-goto-servante="${x.s.id}">${escapeHtml(x.s.agentNom)} — ${x.status.label}</span>`).join('')}
+          ${enRetard.map(x=>`<span class="pill pill-red" style="cursor:pointer;" data-goto-servante="${x.s.id}">${escapeHtml(x.s.agentNom || 'Servante disponible')} — ${x.status.label}</span>`).join('')}
         </div>
       </div>` : ''}
     <div class="dash-grid">
@@ -2903,23 +2932,121 @@ function openNewServanteModal(){
   });
 }
 
-async function libererServante(servanteId){
+/* Inventaire à faire aujourd'hui (remise, passation, transfert) : apparaît dans les rappels. */
+function prochainInventaireAujourdhui(note){
+  const d = new Date(); d.setHours(23,59,0,0);
+  return { date: d.toISOString(), note, responsableMatricule: null, responsableNom: null,
+           definePar: `${currentUser.prenom} ${currentUser.nom}`, defineLe: nowIso() };
+}
+
+function libererServante(servanteId){
   const s = servantesCache.find(x=>x.id===servanteId);
-  if(!s.agentMatricule) return;
-  showConfirmModal(
-    `Retirer cette servante à ${s.agentNom} ? Tous les outils et l'historique restent intacts — la servante redevient "disponible" et pourra être attribuée à un autre agent.`,
-    async ()=>{
-      const historique = (s.historiqueAffectations||[]).map((h,idx,arr) =>
-        idx === arr.length-1 && !h.dateRetour ? { ...h, dateRetour: nowIso(), retireParNom: `${currentUser.prenom} ${currentUser.nom}` } : h
-      );
-      await updateDoc(doc(db,'servantes',servanteId), {
-        agentMatricule: null, agentNom: null,
-        historiqueAffectations: historique
-      });
-      showToast("Servante libérée, elle est maintenant disponible.", 'success');
-    },
-    { title:'Retirer la servante', confirmLabel:'Retirer', danger:false }
-  );
+  if(!s || !s.agentMatricule) return;
+  openModal(`
+    <div class="modal-head"><h3>Remise de la servante au magasin</h3><button class="modal-close" id="m-close">&times;</button></div>
+    <p style="font-size:13.5px;margin-bottom:12px;">Servante n° <b>${escapeHtml(s.agentMatricule)}</b> de <b>${escapeHtml(s.agentNom||'')}</b>. Les outils et l'historique restent sur la servante : elle devient « disponible » et pourra être attribuée à un autre agent.</p>
+    <div class="modal-error" id="lib-error"></div>
+    <div class="field"><label>Motif</label>
+      <select id="lib-motif">
+        <option>Départ de l'agent</option><option>Changement d'affectation</option><option>Fin de mission</option><option>Autre</option>
+      </select>
+    </div>
+    <div class="field"><label>Remarque (optionnel)</label><input type="text" id="lib-note"></div>
+    <div class="checkbox-row" style="margin-bottom:10px;">
+      <input type="checkbox" id="lib-inv" checked>
+      <label for="lib-inv">Programmer un inventaire de remise pour aujourd'hui</label>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" id="m-cancel">Annuler</button>
+      <button type="button" class="btn btn-primary" id="lib-ok">Remettre au magasin</button>
+    </div>`);
+  document.getElementById('m-close').addEventListener('click', closeModal);
+  document.getElementById('m-cancel').addEventListener('click', closeModal);
+  document.getElementById('lib-ok').addEventListener('click', async ()=>{
+    const btn = document.getElementById('lib-ok'); btn.disabled = true;
+    try{
+      const motif = document.getElementById('lib-motif').value;
+      const note = sanitizeInput(document.getElementById('lib-note').value);
+      const historique = [...(s.historiqueAffectations||[])];
+      const last = historique.length - 1;
+      if(last >= 0 && !historique[last].dateRetour){
+        historique[last] = { ...historique[last], dateRetour: nowIso(), retireParNom: `${currentUser.prenom} ${currentUser.nom}`, motifRetour: motif + (note ? ' — ' + note : ''), evenement: 'retour_magasin' };
+      } else {
+        historique.push({ agentMatricule: s.agentMatricule, agentNom: s.agentNom, garage: s.garage || null, dateAttribution: null, dateRetour: nowIso(),
+                          retireParNom: `${currentUser.prenom} ${currentUser.nom}`, motifRetour: motif + (note ? ' — ' + note : ''), evenement: 'retour_magasin' });
+      }
+      const upd = { agentMatricule: null, agentNom: null, historiqueAffectations: historique };
+      if(document.getElementById('lib-inv').checked) upd.prochainInventairePrevu = prochainInventaireAujourdhui('Inventaire de remise au magasin');
+      await updateDoc(doc(db,'servantes',servanteId), upd);
+      closeModal();
+      showToast("Servante remise au magasin : elle est maintenant disponible.", 'success');
+    }catch(err){
+      const e = document.getElementById('lib-error'); e.textContent = err.message; e.style.display = 'block'; btn.disabled = false;
+    }
+  });
+}
+
+/* Transfert vers un autre garage (avec l'agent s'il y en a un) */
+function openTransfererServanteModal(servanteId){
+  const s = servantesCache.find(x=>x.id===servanteId); if(!s) return;
+  if(s.agentMatricule && !isAdminUser()){
+    showToast("Seul un administrateur peut transférer un agent vers un autre garage.", 'warning');
+    return;
+  }
+  const garages = garagesCache.filter(g => g !== s.garage);
+  if(!garages.length){ showToast("Aucun autre garage n'est défini (Paramètres).", 'warning'); return; }
+  openModal(`
+    <div class="modal-head"><h3>Transférer vers un autre garage</h3><button class="modal-close" id="m-close">&times;</button></div>
+    <p style="font-size:13.5px;margin-bottom:12px;">${s.agentMatricule ? `La servante n° <b>${escapeHtml(s.agentMatricule)}</b> suit <b>${escapeHtml(s.agentNom||'')}</b> : son garage change aussi dans sa fiche agent.` : 'Servante disponible : seul son garage de rattachement change.'}<br>Garage actuel : <b>${escapeHtml(s.garage||'—')}</b></p>
+    <div class="modal-error" id="tr-error"></div>
+    <div class="field"><label>Nouveau garage</label>
+      <select id="tr-garage">${garages.map(g=>`<option>${escapeHtml(g)}</option>`).join('')}</select>
+    </div>
+    <div class="checkbox-row" style="margin-bottom:10px;">
+      <input type="checkbox" id="tr-inv" checked>
+      <label for="tr-inv">Programmer un inventaire de passation pour aujourd'hui</label>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" id="m-cancel">Annuler</button>
+      <button type="button" class="btn btn-primary" id="tr-ok">Transférer</button>
+    </div>`);
+  document.getElementById('m-close').addEventListener('click', closeModal);
+  document.getElementById('m-cancel').addEventListener('click', closeModal);
+  document.getElementById('tr-ok').addEventListener('click', async ()=>{
+    const btn = document.getElementById('tr-ok'); btn.disabled = true;
+    try{
+      const g = document.getElementById('tr-garage').value;
+      if(s.agentMatricule) await updateDoc(doc(db,'agents',s.agentMatricule), { garage: g });
+      await changerGarageServante(s, g, document.getElementById('tr-inv').checked);
+      closeModal();
+      showToast(`Servante transférée vers ${g}.`, 'success');
+    }catch(err){
+      const e = document.getElementById('tr-error'); e.textContent = err.message; e.style.display = 'block'; btn.disabled = false;
+    }
+  });
+}
+
+/* Change le garage de la servante et le trace dans l'historique des affectations. */
+async function changerGarageServante(s, garage, avecInventaire){
+  const historique = (s.historiqueAffectations||[]).map((h,idx,arr)=> idx === arr.length-1 && !h.dateRetour ? { ...h, dateRetour: nowIso(), motifRetour: 'transfert de garage' } : h);
+  historique.push({ agentMatricule: s.agentMatricule || null, agentNom: s.agentNom || null, garage, ancienGarage: s.garage || null,
+                    dateAttribution: nowIso(), dateRetour: null, evenement: 'transfert_garage', parNom: `${currentUser.prenom} ${currentUser.nom}` });
+  const upd = { garage, historiqueAffectations: historique };
+  if(avecInventaire) upd.prochainInventairePrevu = prochainInventaireAujourdhui('Inventaire de passation (transfert vers ' + garage + ')');
+  await updateDoc(doc(db,'servantes',s.id), upd);
+}
+
+function historiqueAffectationsHtml(s){
+  const h = (s.historiqueAffectations||[]).slice().reverse();
+  if(!h.length) return '';
+  const d = iso => iso ? new Date(iso).toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric'}) : '—';
+  const ligne = e => {
+    if(e.evenement === 'transfert_garage') return `<b>${d(e.dateAttribution)}</b> — transférée de ${escapeHtml(e.ancienGarage||'—')} vers <b>${escapeHtml(e.garage||'—')}</b>${e.agentNom ? ' avec ' + escapeHtml(e.agentNom) : ''}`;
+    if(e.evenement === 'retour_magasin' && !e.dateAttribution) return `<b>${d(e.dateRetour)}</b> — remise au magasin${e.motifRetour ? ' (' + escapeHtml(e.motifRetour) + ')' : ''}`;
+    return `<b>${d(e.dateAttribution)}</b> — attribuée à ${escapeHtml(e.agentNom||'—')} (${escapeHtml(e.agentMatricule||'—')}) · ${escapeHtml(e.garage||'—')}${e.dateRetour ? `<br><span style="color:var(--steel);">&nbsp;&nbsp;↳ fin le ${d(e.dateRetour)}${e.motifRetour ? ' : ' + escapeHtml(e.motifRetour) : ''}</span>` : ''}`;
+  };
+  return `<details class="panel" style="margin-top:16px;"><summary style="cursor:pointer;padding:12px 16px;font-weight:700;">Historique des affectations (${h.length})</summary>
+    <div style="padding:6px 16px 14px;font-size:13px;line-height:1.9;">${h.map(ligne).join('<br>')}</div></details>`;
 }
 
 function openReattribuerServanteModal(servanteId){
@@ -2940,7 +3067,11 @@ function openReattribuerServanteModal(servanteId){
           ${eligibles.map(a=>`<option value="${escapeHtml(a.matricule)}">${escapeHtml(a.prenom)} ${escapeHtml(a.nom)} — ${escapeHtml(a.matricule)}${a.garage?' · '+escapeHtml(a.garage):''}</option>`).join('')}
         </select>
       </div>
-      <p style="font-size:12px;color:var(--steel);">Tous les outils et l'historique déjà présents sur cette servante restent inchangés.</p>
+      <p style="font-size:12px;color:var(--steel);">Tous les outils et l'historique déjà présents sur cette servante restent inchangés. Son garage devient celui du nouvel agent.</p>
+      <div class="checkbox-row" style="margin-bottom:10px;">
+        <input type="checkbox" id="reatt-inv" checked>
+        <label for="reatt-inv">Programmer un inventaire de passation pour aujourd'hui</label>
+      </div>
       <div class="field-row">
         <div class="field"><label>Quantité</label><input type="number" id="assign-qte" min="1" step="1" value="1"></div>
         <div class="field"><label>N° de série (optionnel)</label><input type="text" id="assign-serie"></div>
@@ -2960,11 +3091,14 @@ function openReattribuerServanteModal(servanteId){
     if(!matricule){ errEl.textContent = "Veuillez sélectionner un agent."; errEl.style.display='block'; return; }
     const agent = agentsCache.find(a=>a.matricule===matricule);
     try{
-      const historique = [...(s.historiqueAffectations||[]), { agentMatricule: matricule, agentNom: `${agent.prenom} ${agent.nom}`, garage: agent.garage, dateAttribution: nowIso(), dateRetour: null }];
-      await updateDoc(doc(db,'servantes',servanteId), {
+      const historique = [...(s.historiqueAffectations||[]), { agentMatricule: matricule, agentNom: `${agent.prenom} ${agent.nom}`, garage: agent.garage, ancienGarage: s.garage || null, dateAttribution: nowIso(), dateRetour: null, evenement: 'attribution' }];
+      const upd = {
         agentMatricule: matricule, agentNom: `${agent.prenom} ${agent.nom}`, garage: agent.garage,
         historiqueAffectations: historique
-      });
+      };
+      const invEl = document.getElementById('reatt-inv');
+      if(invEl && invEl.checked) upd.prochainInventairePrevu = prochainInventaireAujourdhui('Inventaire de passation (nouvelle attribution)');
+      await updateDoc(doc(db,'servantes',servanteId), upd);
       closeModal();
       showToast(`Servante attribuée à ${agent.prenom} ${agent.nom}.`, 'success');
     }catch(err){
@@ -3091,7 +3225,8 @@ function renderServanteDetail(servanteId){
         <div style="margin-top:8px;">${inventoryStatusPill(s)}</div>
       </div>
       <div class="page-head-actions">
-        ${canReaffecter && !disponible ? `<button class="btn btn-secondary" id="btn-liberer-servante">Retirer à l'agent</button>` : ''}
+        ${canReaffecter && !disponible ? `<button class="btn btn-secondary" id="btn-liberer-servante">Remettre au magasin</button>` : ''}
+        ${canReaffecter ? `<button class="btn btn-secondary" id="btn-transferer-servante">Transférer vers un autre garage</button>` : ''}
         ${canReaffecter && disponible ? `<button class="btn btn-primary" id="btn-reattribuer-servante">Attribuer à un agent</button>` : ''}
         ${canInventaire ? `<button class="btn btn-primary" id="btn-new-inventaire">${findDraftInventaire(servanteId) ? '📝 Reprendre l\'inventaire en cours' : '+ Nouvel inventaire'}</button>` : ''}
         ${canProgrammer ? `<button class="btn btn-secondary" id="btn-programmer-inv">Programmer un inventaire</button>` : ''}
@@ -3115,6 +3250,7 @@ function renderServanteDetail(servanteId){
 
     <div class="section-label">Inventaires</div>
     <div class="panel" id="inv-panel"><div class="empty-state"><p>Chargement…</p></div></div>
+    ${historiqueAffectationsHtml(s)}
 
     <div class="section-label">Historique des mouvements ${helpIconHtml('validation-help-btn')}</div>
     <div class="panel" id="mvts-panel">
@@ -3131,6 +3267,7 @@ function renderServanteDetail(servanteId){
     <p style="margin:0;">Une fois les <b>deux</b> étapes faites, l'élément disparaît de cette page et devient consultable dans <b>Journal → Historique validé</b>.</p>
   `));
   if(canReaffecter && !disponible) document.getElementById('btn-liberer-servante').addEventListener('click', ()=>libererServante(servanteId));
+  if(canReaffecter) document.getElementById('btn-transferer-servante').addEventListener('click', ()=>openTransfererServanteModal(servanteId));
   if(canReaffecter && disponible) document.getElementById('btn-reattribuer-servante').addEventListener('click', ()=>openReattribuerServanteModal(servanteId));
   if(canAttribuer) document.getElementById('btn-add-tool').addEventListener('click', ()=>openAssignToolModal(servanteId));
   if(canInventaire) document.getElementById('btn-new-inventaire').addEventListener('click', ()=>openInventaireModal(servanteId));
@@ -4623,7 +4760,9 @@ async function appliquerEcartsInventaire(inv, inventaireId, servanteId){
     if(nonConformes.length){
       await updateDoc(doc(db,'servantes',servanteId), { outilsAssignes: newOutilsAssignes });
     }
-    const servanteUpdate = { dernierInventaire: { date: inv.dateInventaire, inventaireId }, prochainInventairePrevu: null };
+    const datePrec = s.dernierInventaire && s.dernierInventaire.date;
+  const plusRecent = !datePrec || new Date(inv.dateInventaire) >= new Date(datePrec);
+  const servanteUpdate = { ...(plusRecent ? { dernierInventaire: { date: inv.dateInventaire, inventaireId } } : {}), prochainInventairePrevu: null };
     await updateDoc(doc(db,'servantes',servanteId), servanteUpdate);
   return servanteUpdate;
 }
