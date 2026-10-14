@@ -2850,7 +2850,7 @@ function renderServantesView(){
         <td>${s.agentMatricule ? `<b>${escapeHtml(s.agentNom||'—')}</b>` : `<span class="pill pill-amber"><span class="pill-dot"></span>Disponible</span>`}</td>
         <td class="mono">${escapeHtml(s.agentMatricule||'—')}</td>
         <td>${escapeHtml(s.garage||'—')}</td>
-        <td>${outils.length}</td>
+        <td>${outils.length}${outils.reduce((n,t)=>n+(t.quantite||1),0) !== outils.length ? ` <span style="color:var(--steel);font-size:11.5px;">(${outils.reduce((n,t)=>n+(t.quantite||1),0)} pièces)</span>` : ''}</td>
         <td>${nbCasse ? `<span class="pill pill-red">${nbCasse}</span>` : '0'}</td>
         <td>${nbUse ? `<span class="pill pill-amber">${nbUse}</span>` : '0'}</td>
         <td>${inventoryStatusPill(s)}</td>
@@ -3236,7 +3236,7 @@ function renderServanteDetail(servanteId){
     </div>
 
     <div class="section-label" style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
-      <span>Outils en dotation (${outils.length})</span>
+      <span>Outils en dotation (${outils.length} référence${outils.length>1?'s':''} · ${outils.reduce((n,t)=>n+(t.quantite||1),0)} pièce${outils.reduce((n,t)=>n+(t.quantite||1),0)>1?'s':''})</span>
       <button class="btn btn-secondary btn-sm" id="btn-export-dotation" style="text-transform:none;letter-spacing:0;">Exporter Excel</button>
     </div>
     ${canToutCatalogue && outilsCache.some(o => !(s.outilsAssignes||[]).some(t => t.outilId === o.id)) ? `
@@ -4138,14 +4138,14 @@ async function downloadInventairePDF(inventaireId, servanteId){
       startY: y,
       margin: { left: margin, right: margin },
       tableWidth: contentW,
-      head: [["Référence", "Désignation", "Catégorie", "Résultat", "Commentaire"]],
+      head: [["Référence", "Désignation", "Nombre", "Catégorie", "Résultat", "Commentaire"]],
       body: (()=>{
         const rows = []; let lastG = null;
         resultats.slice().sort((a,b)=> (a.ordre||999999)-(b.ordre||999999)).forEach(r => {
           const g = r.groupe || '';
-          if(g && g !== lastG) rows.push([{ content: g, colSpan: 5, styles: { fillColor:[225,231,225], textColor:charcoal, fontStyle:'bold', halign:'left' } }]);
+          if(g && g !== lastG) rows.push([{ content: g, colSpan: 6, styles: { fillColor:[225,231,225], textColor:charcoal, fontStyle:'bold', halign:'left' } }]);
           lastG = g;
-          rows.push([r.reference, r.designation + ((r.quantiteAttendue||1) > 1 ? ' x' + r.quantiteAttendue : ''), r.categorie||'—', libEcart(r.resultat) || '—', ((r.quantiteAttendue||1) > 1 && r.resultat !== 'Conforme' ? `[${(r.quantiteAttendue||1) - piecesEnEcart(r)}/${r.quantiteAttendue} conformes] ` : '') + (r.commentaire || '') + (r.photoUrl ? '  [photo en annexe]' : '')]);
+          rows.push([r.reference, r.designation + ((r.quantiteAttendue||1) > 1 ? ' x' + r.quantiteAttendue : ''), `${Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : (r.resultat === 'Conforme' ? (r.quantiteAttendue||1) : 0)} / ${r.quantiteAttendue||1}`, r.categorie||'—', libEcart(r.resultat) || '—', ((r.quantiteAttendue||1) > 1 && r.resultat !== 'Conforme' ? `[${(r.quantiteAttendue||1) - piecesEnEcart(r)}/${r.quantiteAttendue} conformes] ` : '') + (r.commentaire || '') + (r.photoUrl ? '  [photo en annexe]' : '')]);
         });
         return rows;
       })(),
@@ -4153,9 +4153,9 @@ async function downloadInventairePDF(inventaireId, servanteId){
       styles: { fontSize: 8, cellPadding: 2.4, lineColor: [225,228,225], lineWidth: 0.2, overflow: 'linebreak', valign: 'middle' },
       headStyles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 8 },
       alternateRowStyles: { fillColor: [248,249,248] },
-      columnStyles: { 0:{cellWidth:26}, 1:{cellWidth:'auto'}, 2:{cellWidth:24}, 3:{cellWidth:20, fontStyle:'bold', halign:'center'}, 4:{cellWidth:48} },
+      columnStyles: { 0:{cellWidth:24}, 1:{cellWidth:'auto'}, 2:{cellWidth:16, halign:'center'}, 3:{cellWidth:22}, 4:{cellWidth:20, fontStyle:'bold', halign:'center'}, 5:{cellWidth:42} },
       didParseCell: (data) => {
-        if(data.section === 'body' && data.column.index === 3){
+        if(data.section === 'body' && data.column.index === 4){
           const val = data.cell.raw;
           if(val === 'Conforme'){ data.cell.styles.textColor = [0,134,63]; }
           else if(val === 'Cassé' || val === 'Perdu'){ data.cell.styles.textColor = [214,69,69]; }
@@ -4327,7 +4327,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
         <div class="inv-meta">
           <div class="inv-desig">${escapeHtml(r.designation)}${r.quantiteAttendue>1 ? ` <b>× ${r.quantiteAttendue}</b>` : ''}</div>
           <div class="inv-ref">${escapeHtml(r.reference)}${r.categorie ? ' · ' + escapeHtml(r.categorie) : ''}</div>
-          ${r.quantiteAttendue>1 ? `<div class="inv-qty" style="font-size:12.5px;margin-top:4px;">Pièces <b>conformes</b> trouvées : <input type="number" min="0" max="${r.quantiteAttendue}" step="1" data-qty="${r.localId}" style="width:70px;padding:5px 7px;border:1.5px solid var(--line);border-radius:6px;"> / ${r.quantiteAttendue}</div>` : ''}
+          <div class="inv-qty" style="font-size:12.5px;margin-top:4px;">Nombre trouvé en bon état : <input type="number" min="0" step="1" inputmode="numeric" data-qty="${r.localId}" style="width:70px;padding:5px 7px;border:1.5px solid var(--line);border-radius:6px;"> / ${r.quantiteAttendue} <span data-surplus="${r.localId}" style="color:#8f6412;font-weight:700;margin-left:6px;"></span></div>
         </div>
         <div class="inv-btns">
           ${RES.map(x => `<button type="button" class="inv-btn inv-${x.cls}" data-set="${x.v}" data-for="${r.localId}">${x.ico} ${x.lib || x.v}</button>`).join('')}
@@ -4454,6 +4454,8 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     st.innerHTML = r.photoUrl ? `<img class="inv-thumb" src="${escapeHtml(r.photoUrl)}" alt="photo"> <a href="#" data-photo-del="${id}">retirer</a>` : '';
     const qi = $(`[data-qty="${id}"]`);
     if(qi && document.activeElement !== qi) qi.value = r.quantiteTrouvee === null || r.quantiteTrouvee === undefined ? '' : r.quantiteTrouvee;
+    const sp = $(`[data-surplus="${id}"]`);
+    if(sp){ const extra = (r.quantiteTrouvee || 0) - r.quantiteAttendue; sp.textContent = (r.resultat === 'Conforme' && extra > 0) ? `+${extra} en trop` : ''; }
   }
   function refreshProgress(){
     const total = state.resultats.length;
@@ -4504,10 +4506,8 @@ function openInventaireEditor(servanteId, invId, invData, opts){
       const r = rowOf(b.dataset.for);
       r.resultat = b.dataset.set;
       if(r.resultat === 'Conforme'){ r.commentaire = ''; r.photoUrl = ''; }
-      if(r.quantiteAttendue > 1){
-        if(r.resultat === 'Conforme') r.quantiteTrouvee = r.quantiteAttendue;
-        else if(r.quantiteTrouvee === null || r.quantiteTrouvee >= r.quantiteAttendue) r.quantiteTrouvee = 0;
-      }
+      if(r.resultat === 'Conforme') r.quantiteTrouvee = Math.max(r.quantiteAttendue, r.quantiteTrouvee || 0);
+      else if(r.quantiteTrouvee === null || r.quantiteTrouvee === undefined || r.quantiteTrouvee >= r.quantiteAttendue) r.quantiteTrouvee = 0;
       refreshRow(r.localId); refreshProgress(); scheduleSave();
       return;
     }
@@ -4523,9 +4523,9 @@ function openInventaireEditor(servanteId, invId, invData, opts){
       let n = parseInt(qi.value, 10);
       if(Number.isNaN(n)){ r.quantiteTrouvee = null; }
       else {
-        n = Math.max(0, Math.min(r.quantiteAttendue, n));
+        n = Math.max(0, n);
         r.quantiteTrouvee = n;
-        if(n === r.quantiteAttendue){ r.resultat = 'Conforme'; r.commentaire = ''; r.photoUrl = ''; }
+        if(n >= r.quantiteAttendue){ r.resultat = 'Conforme'; r.commentaire = ''; r.photoUrl = ''; }
         else if(!r.resultat || r.resultat === 'Conforme') r.resultat = 'Manquant';
       }
       refreshRow(r.localId); refreshProgress(); scheduleSave();
@@ -4588,7 +4588,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     const restants = state.resultats.filter(r => !r.resultat);
     if(!restants.length){ showToast("Tous les outils sont déjà pointés.", 'info'); return; }
     showConfirmModal(`Marquer ${restants.length} outil${restants.length>1?'s':''} non pointé${restants.length>1?'s':''} comme « Conforme » ? Faites-le seulement si vous les avez tous vérifiés.`, async ()=>{
-      restants.forEach(r => { r.resultat = 'Conforme'; });
+      restants.forEach(r => { r.resultat = 'Conforme'; if(r.quantiteTrouvee === null || r.quantiteTrouvee === undefined) r.quantiteTrouvee = r.quantiteAttendue; });
       await flushSave();
       openInventaireEditor(servanteId, invId, { ...invData, resultats: state.resultats, enTrop: state.enTrop, dateInventaire: dateInputToIso(state.date) });
     }, { title:'Tout marquer conforme', confirmLabel:'Oui, tout est conforme', danger:false });
@@ -4756,6 +4756,17 @@ async function appliquerEcartsInventaire(inv, inventaireId, servanteId){
         inventaireId,
         motif: `Outil en trop trouvé lors de l'inventaire du ${formatDate(inv.dateInventaire)}${e.commentaire ? ' — ' + e.commentaire : ''}`
       }, { preValide: true });
+    }
+    // Pièces trouvées en plus de la dotation (ex. 3 trouvées pour 2 attendues) : consignées comme « en trop »
+    for(const r of (inv.resultats||[])){
+      const surplus = (Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : 0) - (r.quantiteAttendue || 1);
+      if(r.resultat === 'Conforme' && surplus > 0){
+        await logMouvement({
+          quantite: surplus, servanteId, outilId: r.outilId || null, reference: r.reference || '—', designation: r.designation,
+          type: 'en_trop', inventaireId,
+          motif: `${surplus} pièce${surplus>1?'s':''} en plus de la dotation, constatée${surplus>1?'s':''} lors de l'inventaire du ${formatDate(inv.dateInventaire)}`
+        }, { preValide: true });
+      }
     }
     if(nonConformes.length){
       await updateDoc(doc(db,'servantes',servanteId), { outilsAssignes: newOutilsAssignes });
