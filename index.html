@@ -640,6 +640,31 @@ const MVT_TYPES = {
 const RESULTATS_INVENTAIRE = ["Conforme","Manquant","Cassé","Usé"];
 // Affichage : la valeur enregistrée reste « Manquant » (compatibilité), l'écran dit « Perdu ».
 function libEcart(v){ return v === 'Manquant' ? 'Perdu' : (v || ''); }
+/* Compare un inventaire à l'inventaire précédent de la même servante. */
+function comparerInventaires(inv, prev){
+  const cle = r => r.outilId || r.localId || r.reference;
+  const etat = r => { const att = r.quantiteAttendue || 1; const nb = Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : (r.resultat === 'Conforme' ? att : 0); return { res: r.resultat, nb, att }; };
+  const avant = new Map((prev.resultats||[]).map(r => [cle(r), r]));
+  const apres = new Map((inv.resultats||[]).map(r => [cle(r), r]));
+  const changements = [], ajoutes = [], disparus = [];
+  let retiresEcart = 0;
+  (inv.resultats||[]).forEach(r => {
+    const b = avant.get(cle(r));
+    if(!b){ ajoutes.push({ r, apres: etat(r) }); return; }
+    const e0 = etat(b), e1 = etat(r);
+    if(e0.res !== e1.res || e0.nb !== e1.nb || e0.att !== e1.att) changements.push({ r, avant: e0, apres: e1 });
+  });
+  (prev.resultats||[]).forEach(b => {
+    if(apres.has(cle(b))) return;
+    if(b.resultat && b.resultat !== 'Conforme') retiresEcart++; else disparus.push({ r: b, avant: etat(b) });
+  });
+  return { changements, ajoutes, disparus, retiresEcart, total: changements.length + ajoutes.length + disparus.length };
+}
+function libEtat(e){ return (libEcart(e.res) || '—') + (e.att > 1 ? ` (${e.nb}/${e.att})` : ''); }
+function inventairePrecedent(liste, inv){
+  return liste.filter(x => x.id !== inv.id && !x.brouillon && !x.annule && new Date(x.dateInventaire) < new Date(inv.dateInventaire))
+              .sort((a,b)=> new Date(b.dateInventaire) - new Date(a.dateInventaire))[0] || null;
+}
 // Dates d'inventaire saisies à la main (champ date)
 function isoToDateInput(iso){
   const d = iso ? new Date(iso) : new Date(); const p = n => String(n).padStart(2,'0');
@@ -3511,6 +3536,19 @@ async function loadInventaires(servanteId){
       return ecarts.length ? `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;">${ecarts.map(e=>`<span class="pill ${e.resultat==='Cassé'||e.resultat==='Manquant'?'pill-red':'pill-amber'}" title="${escapeHtml(e.commentaire||'')}">${escapeHtml(e.designation)} — ${escapeHtml(libEcart(e.resultat))}${e.commentaire ? ' : ' + escapeHtml(e.commentaire) : ''}${e.photoUrl ? ' 📷' : ''}</span>`).join('')}</div>` : `<div style="margin-top:8px;font-size:12.5px;color:var(--steel);">Tous les outils étaient conformes.</div>`;
     };
     const tropHtml = (inv) => (inv.enTrop||[]).length ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">${inv.enTrop.map(e=>`<span class="pill pill-amber">En trop : ${escapeHtml(e.designation)}${e.commentaire ? ' — ' + escapeHtml(e.commentaire) : ''}</span>`).join('')}</div>` : '';
+    const compHtml = (inv) => {
+      const prev = inventairePrecedent(all, inv);
+      if(!prev) return '';
+      const c = comparerInventaires(inv, prev);
+      const lignes = [
+        ...c.changements.map(x => `<b>${escapeHtml(x.r.designation)}</b> : ${escapeHtml(libEtat(x.avant))} → ${escapeHtml(libEtat(x.apres))}`),
+        ...c.ajoutes.map(x => `<b>${escapeHtml(x.r.designation)}</b> : ajouté à la dotation depuis`),
+        ...c.disparus.map(x => `<b>${escapeHtml(x.r.designation)}</b> : n'est plus en dotation (il était conforme)`)
+      ];
+      const resume = c.total ? `${c.total} changement${c.total>1?'s':''}` : 'aucun changement';
+      return `<details style="margin-top:10px;font-size:12.5px;"><summary style="cursor:pointer;color:var(--steel);">Depuis l'inventaire du ${dCourte(prev.dateInventaire)} : ${resume}${c.retiresEcart ? ` · ${c.retiresEcart} outil${c.retiresEcart>1?'s':''} retiré${c.retiresEcart>1?'s':''} suite aux écarts précédents` : ''}</summary>
+        <div style="margin-top:6px;line-height:1.7;">${lignes.slice(0,40).join('<br>')}${lignes.length>40 ? `<br>… et ${lignes.length-40} autres` : ''}</div></details>`;
+    };
     const draftsHtml = drafts.map(d => {
       const tot = (d.resultats||[]).length, done = (d.resultats||[]).filter(r=>r.resultat).length;
       return `<div style="border-bottom:1px solid var(--line);padding:14px 16px;background:var(--amber-pale);">
@@ -3534,7 +3572,7 @@ async function loadInventaires(servanteId){
           </div>
           <span class="pill pill-amber"><span class="pill-dot"></span>À faire signer puis archiver</span>
         </div>
-        ${pills(inv)}${tropHtml(inv)}
+        ${pills(inv)}${tropHtml(inv)}${compHtml(inv)}
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
           <button class="btn btn-primary btn-sm" data-pdf-inv="${inv.id}">① Télécharger le PDF à signer</button>
           ${canArchive ? `<button class="btn btn-primary btn-sm" data-scan-inv="${inv.id}">② Envoyer le scan signé</button>` : `<span style="font-size:12.5px;color:var(--steel);">② L'archivage est fait par un responsable.</span>`}
@@ -3561,6 +3599,7 @@ async function loadInventaires(servanteId){
             ${pages.length ? `<button class="btn btn-secondary btn-sm" data-scan-view="${inv.id}">Voir le scan (${pages.length} p.)</button>` : ''}
           </div>
         </div>
+        ${compHtml(inv)}
       </div>`;
     }).join('');
     const validesCount = archived.length;
@@ -4184,9 +4223,45 @@ async function downloadInventairePDF(inventaireId, servanteId){
       y = pdf.lastAutoTable.finalY + 7;
     }
 
-    /* Détail par type d'outil : catégorie > sous-catégorie, sur deux colonnes */
+    /* Évolution depuis l'inventaire précédent */
+    try{
+      const tousInv = await getDocs(query(collection(db,'inventaires'), where('servanteId','==',servanteId)));
+      const prev = inventairePrecedent(tousInv.docs.map(d => ({ id: d.id, ...d.data() })), { ...inv, id: inventaireId });
+      if(prev){
+        const c = comparerInventaires(inv, prev);
+        y = titre(`Depuis l'inventaire du ${formatDate(prev.dateInventaire).split(' à ')[0]}`, y);
+        const lignesC = [
+          ...c.changements.map(x => [x.r.designation, x.r.reference, libEtat(x.avant), libEtat(x.apres)]),
+          ...c.ajoutes.map(x => [x.r.designation, x.r.reference, '—', 'Ajouté à la dotation']),
+          ...c.disparus.map(x => [x.r.designation, x.r.reference, libEtat(x.avant), 'Plus en dotation'])
+        ];
+        if(!lignesC.length){
+          pdf.setFontSize(8.5); pdf.setFont(undefined, 'normal'); pdf.setTextColor(...steel);
+          pdf.text('Aucun changement.' + (c.retiresEcart ? ` ${c.retiresEcart} outil${c.retiresEcart>1?'s':''} retiré${c.retiresEcart>1?'s':''} suite aux écarts précédents.` : ''), margin, y + 1);
+          y += 8;
+        } else {
+          const reste = lignesC.length - 30;
+          pdf.autoTable({
+            startY: y, margin: { left: margin, right: margin }, tableWidth: contentW, rowPageBreak: 'avoid',
+            head: [["Outil", "Référence", "Avant", "Maintenant"]],
+            body: lignesC.slice(0, 30),
+            theme: 'grid',
+            styles: { fontSize: 7.5, cellPadding: 1.4, lineColor: [225,228,225], lineWidth: 0.2, overflow: 'linebreak', valign: 'middle' },
+            headStyles: { fillColor: [70,78,88], textColor: 255, fontStyle: 'bold', fontSize: 7.5 },
+            columnStyles: { 0:{cellWidth:'auto'}, 1:{cellWidth:30}, 2:{cellWidth:34}, 3:{cellWidth:40} }
+          });
+          y = pdf.lastAutoTable.finalY + 3;
+          const notes = [];
+          if(reste > 0) notes.push(`… et ${reste} autre${reste>1?'s':''} changement${reste>1?'s':''}.`);
+          if(c.retiresEcart) notes.push(`${c.retiresEcart} outil${c.retiresEcart>1?'s':''} retiré${c.retiresEcart>1?'s':''} de la dotation suite aux écarts précédents.`);
+          if(notes.length){ pdf.setFontSize(7.5); pdf.setFont(undefined, 'normal'); pdf.setTextColor(...steel); pdf.text(notes.join(' '), margin, y + 2); y += 4; }
+          y += 5;
+        }
+      }
+    }catch(e){ /* comparaison facultative : le PDF reste généré */ }
+
+    /* Détail par type d'outil : catégorie > sous-catégorie */
     y = titre("Détail par type d'outil", y);
-    if(y > pageH - 45){ pdf.addPage(); y = 14; }
     const outilParId = new Map(outilsCache.map(o => [o.id, o]));
     const ordreCat = (nom) => { const i = categoriesCache.findIndex(c => c.nom === nom); return i < 0 ? 999 : i; };
     const ordreSous = (cat, nom) => { const c = categoriesCache.find(x => x.nom === cat); const i = c ? (c.sousCategories||[]).findIndex(x => x.nom === nom) : -1; return !nom ? 998 : (i < 0 ? 997 : i); };
@@ -4195,93 +4270,50 @@ async function downloadInventairePDF(inventaireId, servanteId){
       ordreCat(a.cat) - ordreCat(b.cat) || a.cat.localeCompare(b.cat, 'fr') ||
       ordreSous(a.cat, a.sous) - ordreSous(b.cat, b.sous) || a.sous.localeCompare(b.sous, 'fr') ||
       ((a.r.ordre||999999) - (b.r.ordre||999999)) || String(a.r.designation).localeCompare(String(b.r.designation), 'fr', { numeric: true }));
-
-    const gapCol = 6, colLarg = (contentW - gapCol) / 2;
-    const wRef = 22, wNb = 12, wRes = 18, wDes = colLarg - wRef - wNb - wRes;
-    const hBand = 5.7, hSub = 4.1, hHead = 4.8;
-    pdf.setFont(undefined, 'normal'); pdf.setFontSize(7);
-    const flat = [];
+    const corps = [];
     let derCat = null, derSous = null;
     enrichis.forEach(({ r, cat, sous }) => {
       if(cat !== derCat){
         const dansCat = enrichis.filter(x => x.cat === cat);
         const nEc = dansCat.filter(x => x.r.resultat && x.r.resultat !== 'Conforme').length;
-        flat.push({ kind: 'cat', cat, h: hBand, text: `${cat.toUpperCase()}  ·  ${dansCat.length} outil${dansCat.length>1?'s':''}${nEc ? `  ·  ${nEc} écart${nEc>1?'s':''}` : ''}` });
+        corps.push([{ content: `${cat.toUpperCase()}   ·   ${dansCat.length} outil${dansCat.length>1?'s':''}${nEc ? `   ·   ${nEc} écart${nEc>1?'s':''}` : ''}`,
+                      colSpan: 5, styles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', fontSize: 8, cellPadding: { top: 1.1, bottom: 1.1, left: 1.5, right: 1.5 } } }]);
         derCat = cat; derSous = null;
       }
-      if(sous && sous !== derSous) flat.push({ kind: 'sous', cat, sous, h: hSub, text: sous });
-      derSous = sous;
-      const desig = r.designation + ((r.quantiteAttendue||1) > 1 ? ' x' + r.quantiteAttendue : '');
-      const nLines = Math.max(1, pdf.splitTextToSize(desig, wDes - 2.6).length);
-      flat.push({ kind: 'row', r, cat, sous, desig, h: nLines * 2.9 + 1.0 });
-    });
-
-    // répartition en colonnes et en pagesDetail (hauteurs estimées, avec une petite marge)
-    const basPage = pageH - 14 - 2;
-    const pagesDetail = [];
-    let cols = [[], []], ci = 0, used = hHead, premiere = true;
-    const place = () => basPage - (premiere ? y : 12);
-    const nouvelleColonne = (it) => {
-      if(ci === 0) ci = 1; else { pagesDetail.push(cols); cols = [[], []]; ci = 0; premiere = false; }
-      used = hHead;
-      if(it.kind !== 'cat'){
-        cols[ci].push({ kind: 'cat', cat: it.cat, h: hBand, text: it.cat.toUpperCase() + '  (suite)' }); used += hBand;
-        if(it.kind === 'row' && it.sous){ cols[ci].push({ kind: 'sous', cat: it.cat, sous: it.sous, h: hSub, text: it.sous }); used += hSub; }
+      if(sous && sous !== derSous){
+        corps.push([{ content: sous, colSpan: 5, styles: { fillColor: [225,231,225], textColor: charcoal, fontStyle: 'bold', fontSize: 7, cellPadding: { top: 0.5, bottom: 0.5, left: 1.5, right: 1.5 } } }]);
       }
-    };
-    flat.forEach((it, idx) => {
-      let besoin = it.h;
-      if(it.kind === 'cat' && flat[idx+1]){ besoin += flat[idx+1].h; if(flat[idx+1].kind === 'sous' && flat[idx+2]) besoin += flat[idx+2].h; }
-      else if(it.kind === 'sous' && flat[idx+1]) besoin += flat[idx+1].h;
-      if(used + besoin > place()) nouvelleColonne(it);
-      cols[ci].push(it); used += it.h;
-    });
-    pagesDetail.push(cols);
-
-    const cellule = (it) => {
-      if(it.kind === 'cat') return [{ content: it.text, colSpan: 4, styles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', fontSize: 7.5, cellPadding: { top: 1.0, bottom: 1.0, left: 1.2, right: 1.2 } } }];
-      if(it.kind === 'sous') return [{ content: it.text, colSpan: 4, styles: { fillColor: [225,231,225], textColor: charcoal, fontStyle: 'bold', fontSize: 7, cellPadding: { top: 0.5, bottom: 0.5, left: 1.2, right: 1.2 } } }];
-      const r = it.r;
+      derSous = sous;
       const ecart = r.resultat && r.resultat !== 'Conforme';
       const fill = ecart ? (r.resultat === 'Usé' ? [253,246,225] : [253,236,236]) : null;
       const c = (content, extra = {}) => ({ content, styles: { ...(fill ? { fillColor: fill } : {}), ...extra } });
       const sp = surplusDe(r);
-      return [
+      corps.push([
         c(r.reference, { font: 'courier', fontSize: 6.5 }),
-        c(it.desig),
+        c(r.designation + ((r.quantiteAttendue||1) > 1 ? ' x' + r.quantiteAttendue : '')),
         c(nbTexte(r), { halign: 'center' }),
-        c((libEcart(r.resultat) || '—') + (sp ? ` (+${sp})` : ''), { halign: 'center', fontStyle: 'bold' })
-      ];
-    };
-    let finalY = y;
-    pagesDetail.forEach((cp, pi) => {
-      if(pi > 0){ pdf.addPage(); }
-      const startY = pi === 0 ? y : 12;
-      let basColonnes = startY;
-      cp.forEach((colRows, k) => {
-        if(!colRows.length) return;
-        const x = margin + k * (colLarg + gapCol);
-        pdf.autoTable({
-          startY, margin: { left: x, right: pageW - x - colLarg, top: 12, bottom: 14 }, tableWidth: colLarg,
-          head: [["Référence", "Désignation", "Nb", "Résultat"]],
-          body: colRows.map(cellule),
-          theme: 'grid',
-          styles: { fontSize: 7, cellPadding: { top: 0.4, bottom: 0.4, left: 1.2, right: 1.2 }, lineColor: [225,228,225], lineWidth: 0.15, overflow: 'linebreak', valign: 'middle' },
-          headStyles: { fillColor: [70,78,88], textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 7, cellPadding: { top: 0.9, bottom: 0.9, left: 1.2, right: 1.2 } },
-          columnStyles: { 0:{cellWidth:wRef}, 1:{cellWidth:wDes}, 2:{cellWidth:wNb, halign:'center'}, 3:{cellWidth:wRes, halign:'center'} },
-          didParseCell: (d) => {
-            if(d.section === 'body' && d.column.index === 3 && d.cell.colSpan === 1){
-              const v = d.cell.text.join('');
-              if(v.startsWith('Conforme')) d.cell.styles.textColor = [0,134,63];
-              else if(v.startsWith('Usé')) d.cell.styles.textColor = [143,100,18];
-              else if(v.startsWith('Cassé') || v.startsWith('Perdu')) d.cell.styles.textColor = [214,69,69];
-            }
-          }
-        });
-        basColonnes = Math.max(basColonnes, pdf.lastAutoTable.finalY);
-      });
-      finalY = basColonnes + 6;
+        c((libEcart(r.resultat) || '—') + (sp ? ` (+${sp})` : ''), { halign: 'center', fontStyle: 'bold' }),
+        c(commentaireDe(r))
+      ]);
     });
+    pdf.autoTable({
+      startY: y, margin: { left: margin, right: margin, bottom: 14, top: 12 }, tableWidth: contentW, rowPageBreak: 'avoid',
+      head: [["Référence", "Désignation", "Nombre", "Résultat", "Commentaire"]],
+      body: corps,
+      theme: 'grid',
+      styles: { fontSize: 7, cellPadding: { top: 0.4, bottom: 0.4, left: 1.5, right: 1.5 }, lineColor: [225,228,225], lineWidth: 0.15, overflow: 'linebreak', valign: 'middle' },
+      headStyles: { fillColor: [70,78,88], textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 7 },
+      columnStyles: { 0:{cellWidth:30}, 1:{cellWidth:'auto'}, 2:{cellWidth:20, halign:'center'}, 3:{cellWidth:24}, 4:{cellWidth:45} },
+      didParseCell: (d) => {
+        if(d.section === 'body' && d.column.index === 3 && d.cell.colSpan === 1){
+          const v = d.cell.text.join('');
+          if(v.startsWith('Conforme')) d.cell.styles.textColor = [0,134,63];
+          else if(v.startsWith('Usé')) d.cell.styles.textColor = [143,100,18];
+          else if(v.startsWith('Cassé') || v.startsWith('Perdu')) d.cell.styles.textColor = [214,69,69];
+        }
+      }
+    });
+    let finalY = pdf.lastAutoTable.finalY + 8;
 
     /* Statut du document + signatures, en bas de la dernière page */
     const archive = !!(inv.valideParAgent && inv.valideParAdmin);
