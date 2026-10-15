@@ -3516,8 +3516,10 @@ async function loadInventaires(servanteId){
       return `<div style="border-bottom:1px solid var(--line);padding:14px 16px;background:var(--amber-pale);">
         <div style="font-weight:700;">📝 Inventaire en cours — ${done} / ${tot} outils pointés</div>
         <div style="font-size:12px;color:var(--steel);">Commencé le ${formatDate(d.debutLe || d.dateInventaire)} par ${escapeHtml(d.realiseParNom||'')}</div>
+        ${done === tot && tot > 0 ? `<div style="margin-top:6px;font-size:13px;font-weight:700;color:#8A6412;">Tous les outils sont pointés : il reste à cliquer sur « Terminer l'inventaire » pour le clôturer et obtenir le PDF à signer.</div>` : ''}
         <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-primary btn-sm" data-resume-inv="${d.id}">Reprendre l'inventaire</button>
+          <button class="btn btn-primary btn-sm" data-resume-inv="${d.id}">${done === tot && tot > 0 ? 'Terminer l\'inventaire' : 'Reprendre l\'inventaire'}</button>
+          <button class="btn btn-secondary btn-sm" data-pdf-inv="${d.id}">📄 PDF provisoire</button>
         </div>
       </div>`;
     }).join('');
@@ -4081,22 +4083,22 @@ async function downloadInventairePDF(inventaireId, servanteId){
 
     /* Bandeau d'en-tête */
     pdf.setFillColor(...charcoal);
-    pdf.rect(0, 0, pageW, 26, 'F');
+    pdf.rect(0, 0, pageW, 20, 'F');
     pdf.setFillColor(...green);
-    pdf.rect(0, 0, 4, 26, 'F');
+    pdf.rect(0, 0, 4, 20, 'F');
     pdf.setTextColor(255,255,255);
-    pdf.setFontSize(15);
+    pdf.setFontSize(14);
     pdf.setFont(undefined, 'bold');
-    pdf.text("FICHE D'INVENTAIRE", margin, 13);
+    pdf.text("FICHE D'INVENTAIRE", margin, 10);
     pdf.setFontSize(8.5);
     pdf.setFont(undefined, 'normal');
-    pdf.text(`Servante d'outillage n° ${numero} — Gestion d'atelier`, margin, 19);
+    pdf.text(`Servante d'outillage n° ${numero} — Gestion d'atelier`, margin, 16);
     pdf.setFontSize(7.5);
-    pdf.text(formatDate(nowIso()).split(' à ')[0], pageW - margin, 19, { align: 'right' });
+    pdf.text(formatDate(nowIso()).split(' à ')[0], pageW - margin, 16, { align: 'right' });
 
     /* Bloc informations (6 cases) */
-    let y = 34;
-    const boxH = 38;
+    let y = 26;
+    const boxH = 29;
     const colW = contentW / 2;
     pdf.setDrawColor(220,220,220);
     pdf.setFillColor(250,251,250);
@@ -4106,120 +4108,176 @@ async function downloadInventairePDF(inventaireId, servanteId){
       ["Agent", `${s.agentNom || inv.agentNom || 'Non attribuée'}${(s.agentMatricule||inv.agentMatricule) ? ' ('+(s.agentMatricule||inv.agentMatricule)+')' : ''}`],
       ["Garage", s.garage || inv.garage || '—'],
       ["Date de l'inventaire", formatDate(inv.dateInventaire).split(' à ')[0]],
-      ["Réalisé par", inv.realiseParNom || '—'],
+      ["Réalisé par (fonction)", `${inv.realiseParNom || '—'}${inv.realiseFonction ? ' — ' + inv.realiseFonction : ''}`],
       ["Début / fin", `${inv.debutLe ? formatDate(inv.debutLe) : '-'} au ${inv.termineLe ? formatDate(inv.termineLe) : '-'}`]
     ];
     infoRows.forEach((row, idx) => {
       const colX = margin + 6 + (idx % 2) * colW;
-      const rowY = y + 8 + Math.floor(idx/2) * 11;
-      pdf.setFontSize(7);
+      const rowY = y + 7 + Math.floor(idx/2) * 9;
+      pdf.setFontSize(6.5);
       pdf.setTextColor(...steel);
       pdf.text(row[0].toUpperCase(), colX, rowY);
-      pdf.setFontSize(9.5);
+      pdf.setFontSize(9);
       pdf.setTextColor(...charcoal);
       pdf.setFont(undefined, 'bold');
-      pdf.text(pdf.splitTextToSize(String(row[1]), colW - 10)[0], colX, rowY + 5);
+      pdf.text(pdf.splitTextToSize(String(row[1]), colW - 10)[0], colX, rowY + 4.5);
       pdf.setFont(undefined, 'normal');
     });
-    y += boxH + 6;
+    y += boxH + 5;
 
-    /* Synthèse */
+    /* Synthèse : tuiles */
     const cnt = (v) => resultats.filter(r=>r.resultat===v).length;
-    pdf.setFontSize(9.5);
-    pdf.setTextColor(...charcoal);
-    pdf.setFont(undefined, 'bold');
-    const pl = (n, one, many) => `${n} ${n>1 ? many : one}`;
-    pdf.text(`${pl(resultats.length,'outil pointé','outils pointés')} — ${pl(cnt('Conforme'),'conforme','conformes')} · ${pl(cnt('Manquant'),'perdu','perdus')} · ${pl(cnt('Cassé'),'cassé','cassés')} · ${pl(cnt('Usé'),'usé','usés')} · ${enTrop.length} en trop`, margin, y);
-    pdf.setFont(undefined, 'normal');
-    y += 5;
+    const surplusDe = (r) => (r.resultat === 'Conforme' && Number.isFinite(r.quantiteTrouvee)) ? Math.max(0, r.quantiteTrouvee - (r.quantiteAttendue||1)) : 0;
+    const surplusTotal = resultats.reduce((n, r) => n + surplusDe(r), 0);
+    const tuiles = [
+      ['Outils pointés', resultats.length, charcoal], ['Conformes', cnt('Conforme'), [0,134,63]],
+      ['Perdus', cnt('Manquant'), [214,69,69]], ['Cassés', cnt('Cassé'), [214,69,69]],
+      ['Usés', cnt('Usé'), [143,100,18]], ['En trop', enTrop.length + surplusTotal, [143,100,18]]
+    ];
+    const tw = (contentW - 5*3) / 6;
+    tuiles.forEach((t, i) => {
+      const x = margin + i * (tw + 3);
+      pdf.setDrawColor(220,224,220); pdf.setFillColor(250,251,250);
+      pdf.roundedRect(x, y, tw, 13, 2, 2, 'FD');
+      pdf.setFont(undefined, 'bold'); pdf.setFontSize(12); pdf.setTextColor(...t[2]);
+      pdf.text(String(t[1]), x + tw/2, y + 6.5, { align: 'center' });
+      pdf.setFont(undefined, 'normal'); pdf.setFontSize(6.5); pdf.setTextColor(...steel);
+      pdf.text(t[0].toUpperCase(), x + tw/2, y + 10.8, { align: 'center' });
+    });
+    y += 13 + 6;
 
-    /* Tableau des outils */
+    const titre = (txt, yy) => {
+      if(yy > pageH - 40){ pdf.addPage(); yy = 20; }
+      pdf.setFont(undefined, 'bold'); pdf.setFontSize(10); pdf.setTextColor(...charcoal);
+      pdf.text(txt, margin, yy);
+      pdf.setDrawColor(...green); pdf.setLineWidth(0.6); pdf.line(margin, yy + 1.8, margin + 14, yy + 1.8); pdf.setLineWidth(0.2);
+      pdf.setFont(undefined, 'normal');
+      return yy + 5;
+    };
+    const nbTexte = (r) => `${Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : (r.resultat === 'Conforme' ? (r.quantiteAttendue||1) : 0)} / ${r.quantiteAttendue||1}`;
+    const commentaireDe = (r) => ((r.quantiteAttendue||1) > 1 && r.resultat !== 'Conforme' ? `[${(r.quantiteAttendue||1) - piecesEnEcart(r)}/${r.quantiteAttendue} conformes] ` : '') + (r.commentaire || '') + (r.photoUrl ? '  [photo en annexe]' : '');
+
+    /* Écarts constatés (ce que la personne qui signe doit voir en premier) */
+    const ecarts = resultats.filter(r => r.resultat && r.resultat !== 'Conforme');
+    const surplus = resultats.filter(r => surplusDe(r) > 0);
+    if(ecarts.length || enTrop.length || surplus.length){
+      y = titre('Écarts constatés', y);
+      pdf.autoTable({
+        startY: y, margin: { left: margin, right: margin }, tableWidth: contentW, rowPageBreak: 'avoid',
+        head: [["Outil", "Référence", "Nombre", "Mention", "Explication"]],
+        body: [
+          ...ecarts.map(r => [r.designation, r.reference, nbTexte(r), libEcart(r.resultat), commentaireDe(r)]),
+          ...surplus.map(r => [r.designation, r.reference, nbTexte(r), 'En trop', `${surplusDe(r)} pièce${surplusDe(r)>1?'s':''} en plus de la dotation`]),
+          ...enTrop.map(e => [e.designation, e.reference || '—', '1', 'En trop', (e.commentaire||'') + (e.photoUrl ? '  [photo en annexe]' : '')])
+        ],
+        theme: 'grid',
+        styles: { fontSize: 7.5, cellPadding: 1.5, lineColor: [225,228,225], lineWidth: 0.2, overflow: 'linebreak', valign: 'middle' },
+        headStyles: { fillColor: [214,69,69], textColor: 255, fontStyle: 'bold', fontSize: 7.5 },
+        columnStyles: { 0:{cellWidth:'auto'}, 1:{cellWidth:28}, 2:{cellWidth:20, halign:'center'}, 3:{cellWidth:20, fontStyle:'bold', halign:'center'}, 4:{cellWidth:54} },
+        didParseCell: (d) => {
+          if(d.section === 'body' && d.column.index === 3){
+            const v = d.cell.text.join('');
+            d.cell.styles.textColor = (v === 'Usé' || v === 'En trop') ? [143,100,18] : [214,69,69];
+          }
+        }
+      });
+      y = pdf.lastAutoTable.finalY + 7;
+    }
+
+    /* Détail par type d'outil : catégorie > sous-catégorie */
+    y = titre("Détail par type d'outil", y);
+    const outilParId = new Map(outilsCache.map(o => [o.id, o]));
+    const ordreCat = (nom) => { const i = categoriesCache.findIndex(c => c.nom === nom); return i < 0 ? 999 : i; };
+    const ordreSous = (cat, nom) => { const c = categoriesCache.find(x => x.nom === cat); const i = c ? (c.sousCategories||[]).findIndex(x => x.nom === nom) : -1; return !nom ? 998 : (i < 0 ? 997 : i); };
+    const enrichis = resultats.map(r => ({ r, cat: r.categorie || 'Autres outils', sous: (outilParId.get(r.outilId) || {}).sousCategorie || '' }));
+    enrichis.sort((a, b) =>
+      ordreCat(a.cat) - ordreCat(b.cat) || a.cat.localeCompare(b.cat, 'fr') ||
+      ordreSous(a.cat, a.sous) - ordreSous(b.cat, b.sous) || a.sous.localeCompare(b.sous, 'fr') ||
+      ((a.r.ordre||999999) - (b.r.ordre||999999)) || String(a.r.designation).localeCompare(String(b.r.designation), 'fr', { numeric: true }));
+    const corps = [];
+    let derCat = null, derSous = null;
+    enrichis.forEach(({ r, cat, sous }) => {
+      if(cat !== derCat){
+        const dansCat = enrichis.filter(x => x.cat === cat);
+        const nEc = dansCat.filter(x => x.r.resultat && x.r.resultat !== 'Conforme').length;
+        corps.push([{ content: `${cat.toUpperCase()}   ·   ${dansCat.length} outil${dansCat.length>1?'s':''}${nEc ? `   ·   ${nEc} écart${nEc>1?'s':''}` : ''}`,
+                      colSpan: 5, styles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', fontSize: 8, cellPadding: { top: 1.1, bottom: 1.1, left: 1.5, right: 1.5 } } }]);
+        derCat = cat; derSous = null;
+      }
+      if(sous && sous !== derSous){
+        corps.push([{ content: sous, colSpan: 5, styles: { fillColor: [225,231,225], textColor: charcoal, fontStyle: 'bold', fontSize: 7, cellPadding: { top: 0.5, bottom: 0.5, left: 1.5, right: 1.5 } } }]);
+      }
+      derSous = sous;
+      const ecart = r.resultat && r.resultat !== 'Conforme';
+      const fill = ecart ? (r.resultat === 'Usé' ? [253,246,225] : [253,236,236]) : null;
+      const c = (content, extra = {}) => ({ content, styles: { ...(fill ? { fillColor: fill } : {}), ...extra } });
+      const sp = surplusDe(r);
+      corps.push([
+        c(r.reference, { font: 'courier', fontSize: 6.5 }),
+        c(r.designation + ((r.quantiteAttendue||1) > 1 ? ' x' + r.quantiteAttendue : '')),
+        c(nbTexte(r), { halign: 'center' }),
+        c((libEcart(r.resultat) || '—') + (sp ? ` (+${sp})` : ''), { halign: 'center', fontStyle: 'bold' }),
+        c(commentaireDe(r))
+      ]);
+    });
     pdf.autoTable({
-      startY: y,
-      margin: { left: margin, right: margin },
-      tableWidth: contentW,
-      head: [["Référence", "Désignation", "Nombre", "Catégorie", "Résultat", "Commentaire"]],
-      body: (()=>{
-        const rows = []; let lastG = null;
-        resultats.slice().sort((a,b)=> (a.ordre||999999)-(b.ordre||999999)).forEach(r => {
-          const g = r.groupe || '';
-          if(g && g !== lastG) rows.push([{ content: g, colSpan: 6, styles: { fillColor:[225,231,225], textColor:charcoal, fontStyle:'bold', halign:'left' } }]);
-          lastG = g;
-          rows.push([r.reference, r.designation + ((r.quantiteAttendue||1) > 1 ? ' x' + r.quantiteAttendue : ''), `${Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : (r.resultat === 'Conforme' ? (r.quantiteAttendue||1) : 0)} / ${r.quantiteAttendue||1}`, r.categorie||'—', libEcart(r.resultat) || '—', ((r.quantiteAttendue||1) > 1 && r.resultat !== 'Conforme' ? `[${(r.quantiteAttendue||1) - piecesEnEcart(r)}/${r.quantiteAttendue} conformes] ` : '') + (r.commentaire || '') + (r.photoUrl ? '  [photo en annexe]' : '')]);
-        });
-        return rows;
-      })(),
+      startY: y, margin: { left: margin, right: margin, bottom: 14, top: 12 }, tableWidth: contentW, rowPageBreak: 'avoid',
+      head: [["Référence", "Désignation", "Nombre", "Résultat", "Commentaire"]],
+      body: corps,
       theme: 'grid',
-      styles: { fontSize: 8, cellPadding: 2.4, lineColor: [225,228,225], lineWidth: 0.2, overflow: 'linebreak', valign: 'middle' },
-      headStyles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 8 },
-      alternateRowStyles: { fillColor: [248,249,248] },
-      columnStyles: { 0:{cellWidth:24}, 1:{cellWidth:'auto'}, 2:{cellWidth:16, halign:'center'}, 3:{cellWidth:22}, 4:{cellWidth:20, fontStyle:'bold', halign:'center'}, 5:{cellWidth:42} },
-      didParseCell: (data) => {
-        if(data.section === 'body' && data.column.index === 4){
-          const val = data.cell.raw;
-          if(val === 'Conforme'){ data.cell.styles.textColor = [0,134,63]; }
-          else if(val === 'Cassé' || val === 'Perdu'){ data.cell.styles.textColor = [214,69,69]; }
-          else if(val === 'Usé'){ data.cell.styles.textColor = [143,100,18]; }
+      styles: { fontSize: 7, cellPadding: { top: 0.4, bottom: 0.4, left: 1.5, right: 1.5 }, lineColor: [225,228,225], lineWidth: 0.15, overflow: 'linebreak', valign: 'middle' },
+      headStyles: { fillColor: [70,78,88], textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 7 },
+      columnStyles: { 0:{cellWidth:30}, 1:{cellWidth:'auto'}, 2:{cellWidth:20, halign:'center'}, 3:{cellWidth:24}, 4:{cellWidth:45} },
+      didParseCell: (d) => {
+        if(d.section === 'body' && d.column.index === 3 && d.cell.colSpan === 1){
+          const v = d.cell.text.join('');
+          if(v.startsWith('Conforme')) d.cell.styles.textColor = [0,134,63];
+          else if(v.startsWith('Usé')) d.cell.styles.textColor = [143,100,18];
+          else if(v.startsWith('Cassé') || v.startsWith('Perdu')) d.cell.styles.textColor = [214,69,69];
         }
       }
     });
     let finalY = pdf.lastAutoTable.finalY + 8;
 
-    /* Outils en trop */
-    if(enTrop.length){
-      if(finalY > pageH - 50){ pdf.addPage(); finalY = 20; }
-      pdf.setFontSize(10); pdf.setFont(undefined, 'bold'); pdf.setTextColor(...charcoal);
-      pdf.text(`Outils en trop trouvés dans la servante (${enTrop.length})`, margin, finalY);
-      pdf.setFont(undefined, 'normal');
-      pdf.autoTable({
-        startY: finalY + 3,
-        margin: { left: margin, right: margin },
-        tableWidth: contentW,
-        head: [["Désignation", "Référence", "Commentaire"]],
-        body: enTrop.map(e => [e.designation, e.reference || '—', (e.commentaire||'') + (e.photoUrl ? '  [photo en annexe]' : '')]),
-        theme: 'grid',
-        styles: { fontSize: 8, cellPadding: 2.4, lineColor: [225,228,225], lineWidth: 0.2, overflow: 'linebreak' },
-        headStyles: { fillColor: [143,100,18], textColor: 255, fontStyle: 'bold', fontSize: 8 }
-      });
-      finalY = pdf.lastAutoTable.finalY + 8;
-    }
-
-    /* Statut du document */
+    /* Statut du document + signatures, en bas de la dernière page */
     const archive = !!(inv.valideParAgent && inv.valideParAdmin);
-    const boxColor = archive ? green : [197,138,18];
-    const statutTxt = archive
-      ? `Inventaire archivé le ${formatDate(inv.valideParAdminLe).split(' à ')[0]}${inv.sansScan ? ' (sans scan signé)' : ' — scan signé conservé dans l\'application'}`
-      : "À faire signer par l'agent et le responsable, puis à scanner et archiver dans l'application";
-    if(finalY + 16 > pageH - 20){ pdf.addPage(); finalY = 20; }
+    const enCours = inv.brouillon === true;
+    const boxColor = archive ? green : (enCours ? [214,69,69] : [197,138,18]);
+    const statutTxt = enCours
+      ? "INVENTAIRE EN COURS — non clôturé : ne pas faire signer ce document"
+      : (archive
+        ? `Inventaire archivé le ${formatDate(inv.valideParAdminLe).split(' à ')[0]}${inv.sansScan ? ' (sans scan signé)' : ' — scan signé conservé dans l\'application'}`
+        : "À faire signer par l'agent et par la personne qui a réalisé l'inventaire, puis à scanner et archiver dans l'application");
+    const sigH = 34;
+    const sigY = pageH - 15 - sigH;
+    if(finalY > sigY - 16){ pdf.addPage(); finalY = 20; }
+    const statutY = sigY - 14;
     pdf.setDrawColor(...boxColor);
-    pdf.setFillColor(...(archive ? [228,246,236] : [253,246,225]));
-    pdf.roundedRect(margin, finalY, contentW, 12, 2, 2, 'FD');
-    pdf.setFontSize(9.5);
+    pdf.setFillColor(...(archive ? [228,246,236] : (enCours ? [251,231,231] : [253,246,225])));
+    pdf.roundedRect(margin, statutY, contentW, 10, 2, 2, 'FD');
+    pdf.setFontSize(8.5);
     pdf.setFont(undefined, 'bold');
-    pdf.setTextColor(...(archive ? [0,134,63] : [143,100,18]));
-    pdf.text(pdf.splitTextToSize(statutTxt, contentW - 12)[0], margin + 6, finalY + 7.5);
-    finalY += 20;
+    pdf.setTextColor(...(archive ? [0,134,63] : (enCours ? [214,69,69] : [143,100,18])));
+    pdf.text(pdf.splitTextToSize(statutTxt, contentW - 12)[0], margin + 5, statutY + 6.3);
 
-    /* Cases de signature (à imprimer et signer) */
-    const sigH = 48;
-    if(finalY + sigH + 8 > pageH - 14){ pdf.addPage(); finalY = 20; }
     const sigW = (contentW - 6) / 2;
+    const fonction = inv.realiseFonction || 'Responsable';
     const sigs = [
-      ["Signature de l'agent (propriétaire de la servante)", s.agentNom || inv.agentNom || ''],
-      ["Signature du brigadier / responsable", inv.cloturePar || inv.realiseParNom || '']
+      ["Agent — propriétaire de la servante", `Nom : ${s.agentNom || inv.agentNom || ''}`],
+      [`${fonction} — a réalisé l'inventaire`, `Nom : ${inv.realiseParNom || ''}`]
     ];
     sigs.forEach((sg, i) => {
       const x = margin + i * (sigW + 6);
       pdf.setDrawColor(150,150,150);
       pdf.setFillColor(255,255,255);
-      pdf.roundedRect(x, finalY, sigW, sigH, 2, 2, 'D');
+      pdf.roundedRect(x, sigY, sigW, sigH, 2, 2, 'D');
       pdf.setFontSize(7.5); pdf.setTextColor(...steel); pdf.setFont(undefined, 'bold');
-      pdf.text(sg[0].toUpperCase(), x + 3, finalY + 5, { maxWidth: sigW - 6 });
+      pdf.text(sg[0].toUpperCase(), x + 3, sigY + 5, { maxWidth: sigW - 6 });
       pdf.setFont(undefined, 'normal'); pdf.setFontSize(9); pdf.setTextColor(...charcoal);
-      pdf.text(`Nom : ${sg[1]}`, x + 3, finalY + 14, { maxWidth: sigW - 6 });
-      pdf.text('Date : ____ / ____ / ________', x + 3, finalY + 22);
+      pdf.text(sg[1], x + 3, sigY + 12, { maxWidth: sigW - 6 });
+      pdf.text('Date : ____ / ____ / ________', x + 3, sigY + 19);
       pdf.setFontSize(7.5); pdf.setTextColor(...steel);
-      pdf.text('Signature :', x + 3, finalY + 30);
+      pdf.text('Signature :', x + 3, sigY + 26);
     });
 
     /* Annexe photos */
@@ -4297,9 +4355,89 @@ function openInventaireModal(servanteId){
     valideParAgent:false, valideParAgentMatricule:null, valideParAgentNom:null, valideParAgentLe:null,
     valideParAdmin:false, valideParAdminMatricule:null, valideParAdminNom:null, valideParAdminLe:null
   };
-  addDoc(collection(db,'inventaires'), data)
-    .then(ref => openInventaireEditor(servanteId, ref.id, data))
-    .catch(err => showToast("Impossible de démarrer l'inventaire : " + err.message, 'error'));
+  const roleTxt = String(currentUser.role || '').toLowerCase();
+  demanderRealisateur({
+    prenom: currentUser.prenom, nom: currentUser.nom,
+    fonction: /magasin/.test(roleTxt) ? 'Magasinier' : (/brigadier/.test(roleTxt) ? 'Brigadier' : '')
+  }, (r) => {
+    data.realiseParNom = `${r.prenom} ${r.nom}`.trim();
+    data.realiseParPrenom = r.prenom; data.realiseParNomFamille = r.nom; data.realiseFonction = r.fonction;
+    addDoc(collection(db,'inventaires'), data)
+      .then(ref => openInventaireEditor(servanteId, ref.id, data))
+      .catch(err => showToast("Impossible de démarrer l'inventaire : " + err.message, 'error'));
+  });
+}
+
+/* Nom, prénom et fonction de la personne qui réalise (et signera) l'inventaire. */
+function demanderRealisateur(def, onOk, onCancel){
+  const fonctions = ['Magasinier', 'Brigadier'];
+  const estAutre = !!def.fonction && !fonctions.includes(def.fonction);
+  openModal(`
+    <div class="modal-head"><h3>Qui réalise l'inventaire ?</h3><button class="modal-close" id="m-close">&times;</button></div>
+    <p style="font-size:13px;color:var(--steel);margin-bottom:12px;">Cette personne apparaîtra sur le PDF et le signera.</p>
+    <div class="modal-error" id="rl-error"></div>
+    <div class="field-row">
+      <div class="field"><label>Prénom</label><input type="text" id="rl-prenom" class="uc-input" value="${escapeHtml(def.prenom||'')}"></div>
+      <div class="field"><label>Nom</label><input type="text" id="rl-nom" class="uc-input" value="${escapeHtml(def.nom||'')}"></div>
+    </div>
+    <div class="field"><label>Fonction</label>
+      <select id="rl-fonction">
+        <option value="">Choisir…</option>
+        ${fonctions.map(f=>`<option ${def.fonction===f?'selected':''}>${f}</option>`).join('')}
+        <option value="__autre" ${estAutre?'selected':''}>Autre</option>
+      </select>
+    </div>
+    <div class="field" id="rl-autre-box" style="${estAutre?'':'display:none;'}"><label>Précisez la fonction</label><input type="text" id="rl-autre" value="${estAutre ? escapeHtml(def.fonction) : ''}"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" id="m-cancel">Annuler</button>
+      <button type="button" class="btn btn-primary" id="rl-ok">Continuer</button>
+    </div>`);
+  const annuler = ()=>{ closeModal(); if(onCancel) onCancel(); };
+  document.getElementById('m-close').addEventListener('click', annuler);
+  document.getElementById('m-cancel').addEventListener('click', annuler);
+  document.getElementById('rl-fonction').addEventListener('change', (e)=>{
+    document.getElementById('rl-autre-box').style.display = e.target.value === '__autre' ? '' : 'none';
+  });
+  document.getElementById('rl-ok').addEventListener('click', ()=>{
+    const prenom = sanitizeInput(document.getElementById('rl-prenom').value).toUpperCase();
+    const nom = sanitizeInput(document.getElementById('rl-nom').value).toUpperCase();
+    let fonction = document.getElementById('rl-fonction').value;
+    if(fonction === '__autre') fonction = sanitizeInput(document.getElementById('rl-autre').value);
+    const err = document.getElementById('rl-error');
+    if(!prenom || !nom || !fonction){ err.textContent = "Renseignez le prénom, le nom et la fonction."; err.style.display = 'block'; return; }
+    closeModal();
+    onOk({ prenom, nom, fonction });
+  });
+}
+
+function defautRealisateur(src){
+  const parts = String(src.realiseParNom || '').trim().split(/\s+/);
+  return {
+    prenom: src.realiseParPrenom || parts[0] || '',
+    nom: src.realiseParNomFamille || parts.slice(1).join(' ') || '',
+    fonction: src.realiseFonction || ''
+  };
+}
+
+function openApresClotureModal(servanteId, invId){
+  openModal(`
+    <div class="modal-head"><h3>Inventaire clôturé</h3><button class="modal-close" id="m-close">&times;</button></div>
+    <p style="font-size:14px;margin-bottom:14px;">Il reste deux étapes pour l'archiver :</p>
+    <ol style="font-size:14px;line-height:1.9;margin:0 0 16px 18px;">
+      <li><b>Télécharger le PDF</b>, l'imprimer et le faire signer (agent + brigadier).</li>
+      <li><b>Envoyer le scan signé</b> depuis la fiche de la servante : l'inventaire est alors archivé.</li>
+    </ol>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" id="m-cancel">Plus tard</button>
+      <button type="button" class="btn btn-primary" id="apres-pdf">📄 Télécharger le PDF à signer</button>
+    </div>`);
+  document.getElementById('m-close').addEventListener('click', closeModal);
+  document.getElementById('m-cancel').addEventListener('click', closeModal);
+  document.getElementById('apres-pdf').addEventListener('click', async ()=>{
+    const b = document.getElementById('apres-pdf'); b.disabled = true; b.textContent = 'Création du PDF…';
+    await downloadInventairePDF(invId, servanteId);
+    closeModal();
+  });
 }
 
 function openInventaireEditor(servanteId, invId, invData, opts){
@@ -4376,7 +4514,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
       .inv-grp{position:sticky;top:0;z-index:1;background:#EAEFEA;padding:8px 12px;font-weight:700;font-size:12.5px;letter-spacing:.03em;text-transform:uppercase;border-bottom:1px solid var(--line);}
     </style>
     <div class="modal-head"><h3>Inventaire — Servante n° ${escapeHtml(numero)}</h3><button class="modal-close" id="m-close">&times;</button></div>
-    <div class="inv-head-sub">${escapeHtml(s ? (s.agentNom || 'Servante disponible') : '')} · ${escapeHtml(s ? (s.garage||'') : '')} · commencé le ${formatDate(invData.debutLe || invData.dateInventaire)} par ${escapeHtml(invData.realiseParNom || '')}</div>
+    <div class="inv-head-sub">${escapeHtml(s ? (s.agentNom || 'Servante disponible') : '')} · ${escapeHtml(s ? (s.garage||'') : '')} · commencé le ${formatDate(invData.debutLe || invData.dateInventaire)} par <b>${escapeHtml(invData.realiseParNom || '')}</b>${invData.realiseFonction ? ' (' + escapeHtml(invData.realiseFonction) + ')' : ' <span style="color:#d64545;font-weight:700;">(fonction à renseigner)</span>'} <button type="button" class="btn btn-secondary btn-sm" id="inv-who" style="padding:3px 9px;margin-left:4px;">Modifier</button></div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px;">
       <label for="inv-date" style="font-weight:700;">Date de l'inventaire</label>
       <input type="date" id="inv-date" value="${state.date}" max="${isoToDateInput(nowIso())}" style="padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;font-size:15px;">
@@ -4410,6 +4548,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     <div class="inv-foot">
       <span class="inv-state" id="inv-state">Brouillon enregistré automatiquement</span>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button type="button" class="btn btn-secondary btn-sm" id="inv-pdf">📄 PDF</button>
         <button type="button" class="btn btn-danger btn-sm" id="inv-discard">Abandonner</button>
         <button type="button" class="btn btn-secondary" id="inv-save-close">Enregistrer et fermer</button>
         <button type="button" class="btn btn-primary" id="inv-finish">Terminer l'inventaire</button>
@@ -4574,6 +4713,17 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     }
   });
 
+  // --- qui réalise l'inventaire
+  $('#inv-who').addEventListener('click', async ()=>{
+    await flushSave();
+    const retour = (extra) => openInventaireEditor(servanteId, invId, { ...invData, ...(extra||{}), resultats: state.resultats, enTrop: state.enTrop, dateInventaire: dateInputToIso(state.date) });
+    demanderRealisateur(defautRealisateur(invData), async (r)=>{
+      const upd = { realiseParNom: `${r.prenom} ${r.nom}`.trim(), realiseParPrenom: r.prenom, realiseParNomFamille: r.nom, realiseFonction: r.fonction };
+      try{ await updateDoc(doc(db,'inventaires',invId), upd); }catch(err){ showToast("Erreur : " + err.message, 'error'); }
+      retour(upd);
+    }, () => retour());
+  });
+
   // --- date de l'inventaire
   $('#inv-date').addEventListener('change', (e)=>{ if(e.target.value){ state.date = e.target.value; scheduleSave(); } });
 
@@ -4603,6 +4753,13 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     openScanModal((code)=> reopen(code), ()=> reopen(null));
   });
 
+  $('#inv-pdf').addEventListener('click', async ()=>{
+    setState('Création du PDF…');
+    await flushSave();
+    await downloadInventairePDF(invId, servanteId);
+    setState('PDF téléchargé.');
+  });
+
   // --- fermer / abandonner
   async function closeEditor(){ await flushSave(); closeModal(); if(currentServanteId === servanteId) setTimeout(()=>renderServanteDetail(servanteId), 250); }
   $('#m-close').addEventListener('click', closeEditor);
@@ -4619,6 +4776,9 @@ function openInventaireEditor(servanteId, invId, invData, opts){
 
   // --- terminer
   function validate(){
+    if(!invData.realiseFonction){
+      return { ok:false, msg:"Indiquez la fonction (magasinier ou brigadier) de la personne qui réalise l'inventaire : bouton « Modifier » en haut de cette fenêtre.", first:null, filter:activeFilter };
+    }
     const nonPointes = state.resultats.filter(r => !r.resultat);
     if(nonPointes.length){
       return { ok:false, msg:`${nonPointes.length} outil${nonPointes.length>1?'s':''} non pointé${nonPointes.length>1?'s':''}. Pointez-les, ou utilisez « Marquer Conforme tout ce qui reste ».`, first: nonPointes[0].localId, filter:'todo' };
@@ -4676,10 +4836,9 @@ function openInventaireEditor(servanteId, invId, invData, opts){
         });
         if(navigator.onLine) await fin; else fin.catch(()=>{});
         closeModal();
-        showToast(navigator.onLine
-          ? "Inventaire clôturé. Étape suivante : télécharger le PDF à signer, puis envoyer le scan signé."
-          : "Inventaire clôturé sur cet appareil. Il sera envoyé automatiquement au retour du réseau.", 'success');
         if(currentServanteId === servanteId) setTimeout(()=>renderServanteDetail(servanteId), 250);
+        if(navigator.onLine) setTimeout(()=>openApresClotureModal(servanteId, invId), 400);
+        else showToast("Inventaire clôturé sur cet appareil. Il sera envoyé automatiquement au retour du réseau.", 'success');
       }catch(err){
         btn.disabled = false; btn.textContent = 'Confirmer et clôturer';
         showError("Erreur lors de la clôture : " + err.message);
