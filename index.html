@@ -635,7 +635,9 @@ const MVT_TYPES = {
   plus_necessaire:{label:"Plus nécessaire", color:"gray"},
   remplacement:{label:"Remplacement", color:"green"},
   manquant:{label:"Perdu", color:"red"},
-  en_trop:{label:"Outil en trop", color:"amber"}
+  en_trop:{label:"Outil en trop", color:"amber"},
+  retire_dotation:{label:"Retiré de la dotation", color:"gray"},
+  correction_quantite:{label:"Quantité corrigée", color:"gray"}
 };
 const RESULTATS_INVENTAIRE = ["Conforme","Manquant","Cassé","Usé"];
 // Affichage : la valeur enregistrée reste « Manquant » (compatibilité), l'écran dit « Perdu ».
@@ -3344,8 +3346,8 @@ function renderServanteDetail(servanteId){
   if(outSection && sortis.length){
     const peutRemettre = canMouvements || isAdminUser();
     outSection.innerHTML = `
-      <div class="section-label">Écarts à traiter : cassés, perdus, usés (${sortis.length})</div>
-      <div class="panel">${sortis.map(t => {
+      ${sortis.filter(t => t.etat !== 'Hors dotation').length ? `<div class="section-label">Écarts à traiter : cassés, perdus, usés (${sortis.filter(t => t.etat !== 'Hors dotation').length})</div>` : ''}
+      <div class="panel" ${sortis.filter(t => t.etat !== 'Hors dotation').length ? '' : 'style="display:none;"'}>${sortis.filter(t => t.etat !== 'Hors dotation').map(t => {
         const mv = mouvementsAllCache.filter(m => m.servanteId === servanteId && m.outilId && m.outilId === t.outilId && mouvementARemplacer(m))
                                      .sort((a,b)=> new Date(b.date) - new Date(a.date))[0];
         return `
@@ -3358,7 +3360,16 @@ function renderServanteDetail(servanteId){
             ${mv ? `<button class="btn btn-primary btn-sm" data-remplacer-mvt="${mv.id}">Remplacé (pièce neuve)</button>` : ''}
             <button class="btn btn-secondary btn-sm" data-remettre="${t.localId}">${mv ? 'Retrouvé / remis en service' : 'Remettre en service'}</button>
           </div>` : ''}
-        </div>`; }).join('')}</div>`;
+        </div>`; }).join('')}</div>
+      ${sortis.filter(t => t.etat === 'Hors dotation').length ? `
+      <details class="panel" style="margin-top:12px;">
+        <summary style="cursor:pointer;padding:12px 16px;font-weight:700;">Hors dotation : outils que l'agent n'a pas (${sortis.filter(t => t.etat === 'Hors dotation').length})</summary>
+        ${sortis.filter(t => t.etat === 'Hors dotation').map(t => `
+        <div class="tool-row">
+          <div class="meta"><div class="desig">${escapeHtml(t.designation)}</div><div class="ref">${escapeHtml(t.reference)}</div></div>
+          ${peutRemettre ? `<div class="tool-actions"><button class="btn btn-secondary btn-sm" data-remettre="${t.localId}">Remettre dans la dotation</button></div>` : ''}
+        </div>`).join('')}
+      </details>` : ''}`;
     outSection.querySelectorAll('[data-remettre]').forEach(b=>{
       b.addEventListener('click', ()=>remettreOutilEnService(servanteId, b.dataset.remettre));
     });
@@ -3533,9 +3544,11 @@ async function loadInventaires(servanteId){
     const dCourte = iso => iso ? new Date(iso).toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric'}) : '—';
     const pills = (inv) => {
       const ecarts = (inv.resultats||[]).filter(r=>r.resultat!=='Conforme');
-      return ecarts.length ? `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;">${ecarts.map(e=>`<span class="pill ${e.resultat==='Cassé'||e.resultat==='Manquant'?'pill-red':'pill-amber'}" title="${escapeHtml(e.commentaire||'')}">${escapeHtml(e.designation)} — ${escapeHtml(libEcart(e.resultat))}${e.commentaire ? ' : ' + escapeHtml(e.commentaire) : ''}${e.photoUrl ? ' 📷' : ''}</span>`).join('')}</div>` : `<div style="margin-top:8px;font-size:12.5px;color:var(--steel);">Tous les outils étaient conformes.</div>`;
+      const retires = (inv.resultats||[]).filter(r=>r.retire);
+      const retiresHtml = retires.length ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">${retires.map(r=>`<span class="pill pill-gray">Hors dotation : ${escapeHtml(r.designation)}</span>`).join('')}</div>` : '';
+      return retiresHtml + (ecarts.length ? `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;">${ecarts.map(e=>`<span class="pill ${e.resultat==='Cassé'||e.resultat==='Manquant'?'pill-red':'pill-amber'}" title="${escapeHtml(e.commentaire||'')}">${escapeHtml(e.designation)} — ${escapeHtml(libEcart(e.resultat))}${e.commentaire ? ' : ' + escapeHtml(e.commentaire) : ''}${e.photoUrl ? ' 📷' : ''}</span>`).join('')}</div>` : (retires.length ? '' : `<div style="margin-top:8px;font-size:12.5px;color:var(--steel);">Tous les outils étaient conformes.</div>`));
     };
-    const tropHtml = (inv) => (inv.enTrop||[]).length ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">${inv.enTrop.map(e=>`<span class="pill pill-amber">En trop : ${escapeHtml(e.designation)}${e.commentaire ? ' — ' + escapeHtml(e.commentaire) : ''}</span>`).join('')}</div>` : '';
+    const tropHtml = (inv) => (inv.enTrop||[]).length ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">${inv.enTrop.map(e=>`<span class="pill pill-amber">${e.ajouter === true ? 'Ajouté à la dotation' : 'En trop'} : ${escapeHtml(e.designation)}${(e.quantite||1) > 1 ? ' × ' + e.quantite : ''}${e.commentaire ? ' — ' + escapeHtml(e.commentaire) : ''}</span>`).join('')}</div>` : '';
     const compHtml = (inv) => {
       const prev = inventairePrecedent(all, inv);
       if(!prev) return '';
@@ -4166,10 +4179,10 @@ async function downloadInventairePDF(inventaireId, servanteId){
 
     /* Synthèse : tuiles */
     const cnt = (v) => resultats.filter(r=>r.resultat===v).length;
-    const surplusDe = (r) => (r.resultat === 'Conforme' && Number.isFinite(r.quantiteTrouvee)) ? Math.max(0, r.quantiteTrouvee - (r.quantiteAttendue||1)) : 0;
+    const surplusDe = (r) => (r.resultat === 'Conforme' && !r.retire && Number.isFinite(r.quantiteTrouvee)) ? Math.max(0, r.quantiteTrouvee - (r.quantiteAttendue||1)) : 0;
     const surplusTotal = resultats.reduce((n, r) => n + surplusDe(r), 0);
     const tuiles = [
-      ['Outils pointés', resultats.length, charcoal], ['Conformes', cnt('Conforme'), [0,134,63]],
+      ['Outils pointés', resultats.length, charcoal], ['Conformes', cnt('Conforme') - resultats.filter(r => r.retire).length, [0,134,63]],
       ['Perdus', cnt('Manquant'), [214,69,69]], ['Cassés', cnt('Cassé'), [214,69,69]],
       ['Usés', cnt('Usé'), [143,100,18]], ['En trop', enTrop.length + surplusTotal, [143,100,18]]
     ];
@@ -4193,13 +4206,14 @@ async function downloadInventairePDF(inventaireId, servanteId){
       pdf.setFont(undefined, 'normal');
       return yy + 5;
     };
-    const nbTexte = (r) => `${Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : (r.resultat === 'Conforme' ? (r.quantiteAttendue||1) : 0)} / ${r.quantiteAttendue||1}`;
-    const commentaireDe = (r) => ((r.quantiteAttendue||1) > 1 && r.resultat !== 'Conforme' ? `[${(r.quantiteAttendue||1) - piecesEnEcart(r)}/${r.quantiteAttendue} conformes] ` : '') + (r.commentaire || '') + (r.photoUrl ? '  [photo en annexe]' : '');
+    const nbTexte = (r) => r.retire ? '—' : `${Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : (r.resultat === 'Conforme' ? (r.quantiteAttendue||1) : 0)} / ${r.quantiteAttendue||1}`;
+    const commentaireDe = (r) => (r.quantiteOrig !== undefined && r.quantiteOrig !== r.quantiteAttendue ? `[quantité attendue corrigée : ${r.quantiteOrig} → ${r.quantiteAttendue}] `.replace('→', 'a') : '') + ((r.quantiteAttendue||1) > 1 && r.resultat !== 'Conforme' ? `[${(r.quantiteAttendue||1) - piecesEnEcart(r)}/${r.quantiteAttendue} conformes] ` : '') + (r.commentaire || '') + (r.photoUrl ? '  [photo en annexe]' : '');
 
     /* Écarts constatés (ce que la personne qui signe doit voir en premier) */
     const ecarts = resultats.filter(r => r.resultat && r.resultat !== 'Conforme');
     const surplus = resultats.filter(r => surplusDe(r) > 0);
-    if(ecarts.length || enTrop.length || surplus.length){
+    const retiresPdf = resultats.filter(r => r.retire);
+    if(ecarts.length || enTrop.length || surplus.length || retiresPdf.length){
       y = titre('Écarts constatés', y);
       pdf.autoTable({
         startY: y, margin: { left: margin, right: margin }, tableWidth: contentW, rowPageBreak: 'avoid',
@@ -4207,7 +4221,8 @@ async function downloadInventairePDF(inventaireId, servanteId){
         body: [
           ...ecarts.map(r => [r.designation, r.reference, nbTexte(r), libEcart(r.resultat), commentaireDe(r)]),
           ...surplus.map(r => [r.designation, r.reference, nbTexte(r), 'En trop', `${surplusDe(r)} pièce${surplusDe(r)>1?'s':''} en plus de la dotation`]),
-          ...enTrop.map(e => [e.designation, e.reference || '—', '1', 'En trop', (e.commentaire||'') + (e.photoUrl ? '  [photo en annexe]' : '')])
+          ...retiresPdf.map(r => [r.designation, r.reference, '—', 'Hors dotation', "L'agent ne possède pas cet outil : retiré de la dotation"]),
+          ...enTrop.map(e => [e.designation, e.reference || '—', String(e.quantite || 1), e.ajouter === true ? 'Ajouté' : 'En trop', (e.ajouter === true ? "Ajouté à la dotation. " : '') + (e.commentaire||'') + (e.photoUrl ? '  [photo en annexe]' : '')])
         ],
         theme: 'grid',
         styles: { fontSize: 7.5, cellPadding: 1.5, lineColor: [225,228,225], lineWidth: 0.2, overflow: 'linebreak', valign: 'middle' },
@@ -4216,7 +4231,7 @@ async function downloadInventairePDF(inventaireId, servanteId){
         didParseCell: (d) => {
           if(d.section === 'body' && d.column.index === 3){
             const v = d.cell.text.join('');
-            d.cell.styles.textColor = (v === 'Usé' || v === 'En trop') ? [143,100,18] : [214,69,69];
+            d.cell.styles.textColor = (v === 'Usé' || v === 'En trop' || v === 'Ajouté') ? [143,100,18] : (v === 'Hors dotation' ? [91,101,112] : [214,69,69]);
           }
         }
       });
@@ -4292,7 +4307,7 @@ async function downloadInventairePDF(inventaireId, servanteId){
         c(r.reference, { font: 'courier', fontSize: 6.5 }),
         c(r.designation + ((r.quantiteAttendue||1) > 1 ? ' x' + r.quantiteAttendue : '')),
         c(nbTexte(r), { halign: 'center' }),
-        c((libEcart(r.resultat) || '—') + (sp ? ` (+${sp})` : ''), { halign: 'center', fontStyle: 'bold' }),
+        c((r.retire ? 'Hors dotation' : ((libEcart(r.resultat) || '—') + (sp ? ` (+${sp})` : ''))), { halign: 'center', fontStyle: 'bold' }),
         c(commentaireDe(r))
       ]);
     });
@@ -4541,7 +4556,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
         <div class="inv-meta">
           <div class="inv-desig">${escapeHtml(r.designation)}${r.quantiteAttendue>1 ? ` <b>× ${r.quantiteAttendue}</b>` : ''}</div>
           <div class="inv-ref">${escapeHtml(r.reference)}${r.categorie ? ' · ' + escapeHtml(r.categorie) : ''}</div>
-          <div class="inv-qty" style="font-size:12.5px;margin-top:4px;">Nombre trouvé en bon état : <input type="number" min="0" step="1" inputmode="numeric" data-qty="${r.localId}" style="width:70px;padding:5px 7px;border:1.5px solid var(--line);border-radius:6px;"> / ${r.quantiteAttendue} <span data-surplus="${r.localId}" style="color:#8f6412;font-weight:700;margin-left:6px;"></span></div>
+          <div class="inv-qty" style="font-size:12.5px;margin-top:4px;">Nombre trouvé en bon état : <input type="number" min="0" step="1" inputmode="numeric" data-qty="${r.localId}" style="width:70px;padding:5px 7px;border:1.5px solid var(--line);border-radius:6px;"> / <input type="number" min="1" step="1" inputmode="numeric" data-att="${r.localId}" value="${r.quantiteAttendue}" title="Quantité attendue (modifiable)" style="width:58px;padding:5px 7px;border:1.5px solid var(--line);border-radius:6px;"> <span data-surplus="${r.localId}" style="color:#8f6412;font-weight:700;margin-left:6px;"></span> <a href="#" data-retire="${r.localId}" style="font-size:12px;margin-left:10px;white-space:nowrap;"></a></div>
         </div>
         <div class="inv-btns">
           ${RES.map(x => `<button type="button" class="inv-btn inv-${x.cls}" data-set="${x.v}" data-for="${r.localId}">${x.ico} ${x.lib || x.v}</button>`).join('')}
@@ -4614,9 +4629,9 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     <div class="inv-list" id="inv-list">${(()=>{ let last = null, out = ''; state.resultats.forEach(r => { const g = r.groupe || ''; if(g !== last){ out += `<div class="inv-grp">${escapeHtml(g || 'Autres outils')}</div>`; last = g; } out += rowHtml(r); }); return out; })()}</div>
 
     <div class="inv-section">
-      <div style="font-weight:700;">Outils en trop <span style="font-weight:400;color:var(--steel);font-size:12.5px;">(trouvés dans la servante mais absents de la liste)</span></div>
+      <div style="font-weight:700;">Outils trouvés en plus <span style="font-weight:400;color:var(--steel);font-size:12.5px;">(l'agent les possède mais ils ne sont pas dans la liste)</span></div>
       <div id="inv-trop-list"></div>
-      <button type="button" class="btn btn-secondary btn-sm" id="inv-add-trop" style="margin-top:8px;">+ Ajouter un outil en trop</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="inv-add-trop" style="margin-top:8px;">+ Ajouter un outil que l'agent possède</button>
     </div>
 
     <div id="inv-confirm" class="inv-confirm" style="display:none;"></div>
@@ -4659,7 +4674,12 @@ function openInventaireEditor(servanteId, invId, invData, opts){
   function refreshRow(id){
     const r = rowOf(id); if(!r) return;
     const row = $(`[data-row="${id}"]`); if(!row) return;
-    row.querySelectorAll('[data-set]').forEach(b => b.classList.toggle('sel', b.dataset.set === r.resultat));
+    row.querySelectorAll('[data-set]').forEach(b => b.classList.toggle('sel', !r.retire && b.dataset.set === r.resultat));
+    row.style.opacity = r.retire ? '0.6' : '';
+    const lienRetire = $(`[data-retire="${id}"]`);
+    if(lienRetire) lienRetire.textContent = r.retire ? "↩ Remettre dans la liste (hors dotation)" : "L'agent n'a pas cet outil : le retirer de la liste";
+    const att = $(`[data-att="${id}"]`);
+    if(att && document.activeElement !== att) att.value = r.quantiteAttendue;
     const extra = $(`[data-extra="${id}"]`);
     const isEcart = r.resultat && r.resultat !== 'Conforme';
     extra.style.display = isEcart ? 'block' : 'none';
@@ -4705,6 +4725,17 @@ function openInventaireEditor(servanteId, invId, invData, opts){
           <input type="text" data-trop-field="designation" data-id="${e.id}" list="inv-catalogue-list" placeholder="Désignation de l'outil trouvé" value="${escapeHtml(e.designation||'')}" style="flex:2;min-width:180px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;">
           <input type="text" data-trop-field="reference" data-id="${e.id}" placeholder="Référence (si connue)" value="${escapeHtml(e.reference||'')}" style="flex:1;min-width:120px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;">
         </div>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:13px;">
+          <label>Quantité <input type="number" min="1" step="1" inputmode="numeric" data-trop-field="quantite" data-id="${e.id}" value="${e.quantite||1}" style="width:64px;padding:6px 8px;border:1.5px solid var(--line);border-radius:6px;"></label>
+          <label style="display:flex;gap:6px;align-items:center;"><input type="checkbox" data-trop-check="1" data-id="${e.id}" ${e.ajouter !== false ? 'checked' : ''}> Ajouter à la dotation de la servante</label>
+        </div>
+        <div style="margin-top:6px;font-size:13px;">
+          <label>Catégorie (si l'outil n'existe pas encore au catalogue, il y sera ajouté)
+            <select data-trop-field="categorie" data-id="${e.id}" style="margin-left:6px;padding:6px 8px;border:1.5px solid var(--line);border-radius:6px;">
+              ${categoriesCache.map(c => `<option ${((e.categorie || 'Accessoires') === c.nom) ? 'selected' : ''}>${escapeHtml(c.nom)}</option>`).join('')}
+            </select>
+          </label>
+        </div>
         <textarea rows="2" data-trop-field="commentaire" data-id="${e.id}" placeholder="Commentaire (d'où vient cet outil ?)" style="width:100%;margin-top:6px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;font-family:inherit;">${escapeHtml(e.commentaire||'')}</textarea>
         <div class="inv-photo-line">
           <button type="button" class="btn btn-secondary btn-sm" data-trop-photo="${e.id}">📷 Photo</button>
@@ -4717,8 +4748,18 @@ function openInventaireEditor(servanteId, invId, invData, opts){
   // --- clics sur la liste (délégation)
   $('#inv-list').addEventListener('click', (e)=>{
     const b = e.target.closest('[data-set]');
+    const lr = e.target.closest('[data-retire]');
+    if(lr){
+      e.preventDefault();
+      const r = rowOf(lr.dataset.retire);
+      if(r.retire){ r.retire = false; r.resultat = null; r.quantiteTrouvee = null; }
+      else { r.retire = true; r.resultat = 'Conforme'; r.commentaire = ''; r.photoUrl = ''; r.quantiteTrouvee = r.quantiteAttendue; }
+      refreshRow(r.localId); refreshProgress(); scheduleSave();
+      return;
+    }
     if(b){
       const r = rowOf(b.dataset.for);
+      r.retire = false;
       r.resultat = b.dataset.set;
       if(r.resultat === 'Conforme'){ r.commentaire = ''; r.photoUrl = ''; }
       if(r.resultat === 'Conforme') r.quantiteTrouvee = Math.max(r.quantiteAttendue, r.quantiteTrouvee || 0);
@@ -4732,9 +4773,27 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     if(del){ e.preventDefault(); const r = rowOf(del.dataset.photoDel); r.photoUrl = ''; refreshRow(r.localId); scheduleSave(); }
   });
   $('#inv-list').addEventListener('input', (e)=>{
+    const ai = e.target.closest('[data-att]');
+    if(ai){
+      const r = rowOf(ai.dataset.att);
+      const n = parseInt(ai.value, 10);
+      if(Number.isFinite(n) && n >= 1){
+        if(r.quantiteOrig === undefined) r.quantiteOrig = r.quantiteAttendue;
+        r.quantiteAttendue = n;
+        if(r.quantiteOrig === n) delete r.quantiteOrig;
+        if(!r.retire){
+          if(r.quantiteTrouvee === null || r.quantiteTrouvee === undefined){ if(r.resultat === 'Conforme') r.quantiteTrouvee = n; }
+          else if(r.quantiteTrouvee >= n){ r.resultat = 'Conforme'; r.commentaire = ''; r.photoUrl = ''; }
+          else if(!r.resultat || r.resultat === 'Conforme') r.resultat = 'Manquant';
+        } else r.quantiteTrouvee = n;
+        refreshRow(r.localId); refreshProgress(); scheduleSave();
+      }
+      return;
+    }
     const qi = e.target.closest('[data-qty]');
     if(qi){
       const r = rowOf(qi.dataset.qty);
+      r.retire = false;
       let n = parseInt(qi.value, 10);
       if(Number.isNaN(n)){ r.quantiteTrouvee = null; }
       else {
@@ -4752,18 +4811,24 @@ function openInventaireEditor(servanteId, invId, invData, opts){
 
   // --- outils en trop
   $('#inv-add-trop').addEventListener('click', ()=>{
-    state.enTrop.push({ id: uid(), designation:'', reference:'', commentaire:'', photoUrl:'' });
+    state.enTrop.push({ id: uid(), designation:'', reference:'', commentaire:'', photoUrl:'', quantite:1, ajouter:true, categorie:'Accessoires' });
     drawTrop(); scheduleSave();
   });
   $('#inv-trop-list').addEventListener('input', (e)=>{
     const f = e.target.closest('[data-trop-field]'); if(!f) return;
     const item = state.enTrop.find(x => x.id === f.dataset.id); if(!item) return;
     item[f.dataset.tropField] = f.value;
+    if(f.dataset.tropField === 'quantite') item.quantite = Math.max(1, parseInt(f.value, 10) || 1);
     if(f.dataset.tropField === 'designation'){
       const o = outilsCache.find(x => x.designation === f.value);
       if(o){ item.reference = o.reference; item.outilId = o.id; const refInput = $(`[data-trop-field="reference"][data-id="${item.id}"]`); if(refInput) refInput.value = o.reference; }
     }
     scheduleSave();
+  });
+  $('#inv-trop-list').addEventListener('change', (e)=>{
+    const c = e.target.closest('[data-trop-check]'); if(!c) return;
+    const it = state.enTrop.find(x => x.id === c.dataset.id);
+    if(it){ it.ajouter = c.checked; scheduleSave(); }
   });
   $('#inv-trop-list').addEventListener('click', (e)=>{
     const d = e.target.closest('[data-trop-del]');
@@ -4891,8 +4956,8 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     box.innerHTML = `
       <div style="font-weight:700;margin-bottom:6px;">Récapitulatif avant clôture</div>
       <div style="font-size:13.5px;line-height:1.7;">
-        ${state.resultats.length} outils pointés : <b style="color:#00863f;">${n('Conforme')} conformes</b>${n('Manquant')?` · <b style="color:#d64545;">${n('Manquant')} perdu${n('Manquant')>1?'s':''}</b>`:''}${n('Cassé')?` · <b style="color:#d64545;">${n('Cassé')} cassé${n('Cassé')>1?'s':''}</b>`:''}${n('Usé')?` · <b style="color:#8f6412;">${n('Usé')} usé${n('Usé')>1?'s':''}</b>`:''}
-        ${state.enTrop.length ? `<br><b>${state.enTrop.length} outil${state.enTrop.length>1?'s':''} en trop</b>` : ''}
+        ${state.resultats.length} outils pointés : <b style="color:#00863f;">${n('Conforme') - state.resultats.filter(r => r.retire).length} conformes</b>${state.resultats.some(r => r.retire) ? ` · <b>${state.resultats.filter(r => r.retire).length} hors dotation</b>` : ''}${n('Manquant')?` · <b style="color:#d64545;">${n('Manquant')} perdu${n('Manquant')>1?'s':''}</b>`:''}${n('Cassé')?` · <b style="color:#d64545;">${n('Cassé')} cassé${n('Cassé')>1?'s':''}</b>`:''}${n('Usé')?` · <b style="color:#8f6412;">${n('Usé')} usé${n('Usé')>1?'s':''}</b>`:''}
+        ${state.enTrop.length ? `<br><b>${state.enTrop.length} outil${state.enTrop.length>1?'s':''} trouvé${state.enTrop.length>1?'s':''} en plus</b> (ajouté${state.enTrop.length>1?'s':''} à la dotation si la case est cochée, et au catalogue s'il est nouveau)` : ''}${state.resultats.some(r => r.quantiteOrig !== undefined) ? `<br><b>${state.resultats.filter(r => r.quantiteOrig !== undefined).length} quantité${state.resultats.filter(r => r.quantiteOrig !== undefined).length>1?'s':''} attendue${state.resultats.filter(r => r.quantiteOrig !== undefined).length>1?'s':''} corrigée${state.resultats.filter(r => r.quantiteOrig !== undefined).length>1?'s':''}</b>` : ''}
       </div>
       <p style="font-size:12px;color:var(--steel);margin:8px 0;">Une fois clôturé, vous téléchargez le PDF, vous le faites signer, puis vous envoyez le scan : l'inventaire est alors archivé et les écarts sont enregistrés.</p>
       <div style="display:flex;gap:8px;justify-content:flex-end;">
@@ -4966,6 +5031,29 @@ async function appliquerEcartsInventaire(inv, inventaireId, servanteId){
     const typeMap = { 'Manquant':'manquant', 'Cassé':'casse', 'Usé':'usure' };
 
     let newOutilsAssignes = (s.outilsAssignes||[]);
+    let dotationChangee = false;
+    // quantités attendues corrigées pendant l'inventaire
+    for(const r of (inv.resultats||[])){
+      if(r.quantiteOrig !== undefined && r.quantiteOrig !== r.quantiteAttendue && !r.retire){
+        newOutilsAssignes = newOutilsAssignes.map(t => t.localId===r.localId ? {...t, quantite: r.quantiteAttendue} : t);
+        dotationChangee = true;
+        await logMouvement({
+          quantite: r.quantiteAttendue, servanteId, outilId: r.outilId || null, reference: r.reference || '—', designation: r.designation,
+          type: 'correction_quantite', inventaireId,
+          motif: `Quantité corrigée de ${r.quantiteOrig} à ${r.quantiteAttendue} lors de l'inventaire du ${formatDate(inv.dateInventaire)}`
+        }, { preValide: true });
+      }
+    }
+    // outils que l'agent n'a pas : retirés de la dotation (sans être des écarts)
+    for(const r of (inv.resultats||[]).filter(x => x.retire)){
+      newOutilsAssignes = newOutilsAssignes.map(t => t.localId===r.localId ? {...t, actif:false, etat:'Hors dotation'} : t);
+      dotationChangee = true;
+      await logMouvement({
+        quantite: r.quantiteOrig !== undefined ? r.quantiteOrig : (r.quantiteAttendue || 1), servanteId, outilId: r.outilId || null, reference: r.reference || '—', designation: r.designation,
+        type: 'retire_dotation', inventaireId,
+        motif: `Retiré de la dotation lors de l'inventaire du ${formatDate(inv.dateInventaire)} (l'agent ne possède pas cet outil)`
+      }, { preValide: true });
+    }
     for(const r of nonConformes){
       const attendue = r.quantiteAttendue || 1;
       const trouvee = Math.max(0, Math.min(attendue, Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : 0));
@@ -4985,6 +5073,47 @@ async function appliquerEcartsInventaire(inv, inventaireId, servanteId){
       }, { preValide: true });
     }
     for(const e of (inv.enTrop||[])){
+      if(e.ajouter === true){
+        // l'agent possède cet outil : il entre dans la dotation de la servante
+        let outilIdAj = e.outilId || null;
+        if(!outilIdAj){
+          // outil inconnu du catalogue : on le retrouve (même référence ou même désignation), sinon on le crée
+          const norm = v => String(v || '').replace(/[\s.]+/g, '').toUpperCase();
+          const nr = norm(e.reference), nd = norm(e.designation);
+          const ex = outilsCache.find(x => (nr && norm(x.reference) === nr) || (!nr && nd && norm(x.designation) === nd));
+          if(ex) outilIdAj = ex.id;
+          else {
+            try{
+              const cat = categoriesCache.some(c => c.nom === e.categorie) ? e.categorie : 'Accessoires';
+              const nouveau = await addDoc(collection(db,'outils'), {
+                reference: sanitizeInput(String(e.reference || '')).toUpperCase(), designation: sanitizeInput(String(e.designation || '')).toUpperCase(),
+                categorie: cat, sousCategorie: '', fabricant: '', photoUrl: e.photoUrl || null, quantiteStandard: 1,
+                createdAt: nowIso(), ajouteParInventaire: inventaireId
+              });
+              outilIdAj = nouveau.id;
+              outilsCache.push({ id: nouveau.id, reference: String(e.reference || '').toUpperCase(), designation: String(e.designation || '').toUpperCase(), categorie: cat });
+            }catch(errCat){ /* droits insuffisants : l'outil reste ajouté à la servante seulement */ }
+          }
+        }
+        const o = outilsCache.find(x => x.id === outilIdAj) || { categorie: e.categorie || '' };
+        const q = Math.max(1, parseInt(e.quantite, 10) || 1);
+        const iActif = outilIdAj ? newOutilsAssignes.findIndex(t => t.actif && t.outilId === outilIdAj) : -1;
+        const iInactif = outilIdAj ? newOutilsAssignes.findIndex(t => !t.actif && t.outilId === outilIdAj) : -1;
+        if(iActif >= 0) newOutilsAssignes = newOutilsAssignes.map((t, i) => i === iActif ? { ...t, quantite: (t.quantite||1) + q } : t);
+        else if(iInactif >= 0) newOutilsAssignes = newOutilsAssignes.map((t, i) => i === iInactif ? { ...t, actif:true, etat:'En service', quantite:q, dateAttribution: nowIso() } : t);
+        else newOutilsAssignes = [...newOutilsAssignes, {
+          localId: uid(), outilId: outilIdAj, reference: e.reference || '—', designation: e.designation,
+          categorie: o.categorie || '', groupe: o.groupe || '', ordre: o.ordre || 0, quantite: q, numeroSerie: '',
+          dateAttribution: nowIso(), actif: true, etat: 'En service'
+        }];
+        dotationChangee = true;
+        await logMouvement({
+          quantite: q, servanteId, outilId: outilIdAj, reference: e.reference || '—', designation: e.designation,
+          type: 'attribution', inventaireId,
+          motif: `Ajouté à la dotation lors de l'inventaire du ${formatDate(inv.dateInventaire)}${e.commentaire ? ' — ' + e.commentaire : ''}`
+        }, { preValide: true });
+        continue;
+      }
       await logMouvement({
         servanteId, outilId: e.outilId || null, reference: e.reference || '—', designation: e.designation,
         type: 'en_trop',
@@ -4995,7 +5124,7 @@ async function appliquerEcartsInventaire(inv, inventaireId, servanteId){
     // Pièces trouvées en plus de la dotation (ex. 3 trouvées pour 2 attendues) : consignées comme « en trop »
     for(const r of (inv.resultats||[])){
       const surplus = (Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : 0) - (r.quantiteAttendue || 1);
-      if(r.resultat === 'Conforme' && surplus > 0){
+      if(r.resultat === 'Conforme' && !r.retire && surplus > 0){
         await logMouvement({
           quantite: surplus, servanteId, outilId: r.outilId || null, reference: r.reference || '—', designation: r.designation,
           type: 'en_trop', inventaireId,
@@ -5003,7 +5132,7 @@ async function appliquerEcartsInventaire(inv, inventaireId, servanteId){
         }, { preValide: true });
       }
     }
-    if(nonConformes.length){
+    if(dotationChangee || nonConformes.length){
       await updateDoc(doc(db,'servantes',servanteId), { outilsAssignes: newOutilsAssignes });
     }
     const datePrec = s.dernierInventaire && s.dernierInventaire.date;
