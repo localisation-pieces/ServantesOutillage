@@ -4184,8 +4184,9 @@ async function downloadInventairePDF(inventaireId, servanteId){
       y = pdf.lastAutoTable.finalY + 7;
     }
 
-    /* Détail par type d'outil : catégorie > sous-catégorie */
+    /* Détail par type d'outil : catégorie > sous-catégorie, sur deux colonnes */
     y = titre("Détail par type d'outil", y);
+    if(y > pageH - 45){ pdf.addPage(); y = 14; }
     const outilParId = new Map(outilsCache.map(o => [o.id, o]));
     const ordreCat = (nom) => { const i = categoriesCache.findIndex(c => c.nom === nom); return i < 0 ? 999 : i; };
     const ordreSous = (cat, nom) => { const c = categoriesCache.find(x => x.nom === cat); const i = c ? (c.sousCategories||[]).findIndex(x => x.nom === nom) : -1; return !nom ? 998 : (i < 0 ? 997 : i); };
@@ -4194,50 +4195,93 @@ async function downloadInventairePDF(inventaireId, servanteId){
       ordreCat(a.cat) - ordreCat(b.cat) || a.cat.localeCompare(b.cat, 'fr') ||
       ordreSous(a.cat, a.sous) - ordreSous(b.cat, b.sous) || a.sous.localeCompare(b.sous, 'fr') ||
       ((a.r.ordre||999999) - (b.r.ordre||999999)) || String(a.r.designation).localeCompare(String(b.r.designation), 'fr', { numeric: true }));
-    const corps = [];
+
+    const gapCol = 6, colLarg = (contentW - gapCol) / 2;
+    const wRef = 22, wNb = 12, wRes = 18, wDes = colLarg - wRef - wNb - wRes;
+    const hBand = 5.7, hSub = 4.1, hHead = 4.8;
+    pdf.setFont(undefined, 'normal'); pdf.setFontSize(7);
+    const flat = [];
     let derCat = null, derSous = null;
     enrichis.forEach(({ r, cat, sous }) => {
       if(cat !== derCat){
         const dansCat = enrichis.filter(x => x.cat === cat);
         const nEc = dansCat.filter(x => x.r.resultat && x.r.resultat !== 'Conforme').length;
-        corps.push([{ content: `${cat.toUpperCase()}   ·   ${dansCat.length} outil${dansCat.length>1?'s':''}${nEc ? `   ·   ${nEc} écart${nEc>1?'s':''}` : ''}`,
-                      colSpan: 5, styles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', fontSize: 8, cellPadding: { top: 1.1, bottom: 1.1, left: 1.5, right: 1.5 } } }]);
+        flat.push({ kind: 'cat', cat, h: hBand, text: `${cat.toUpperCase()}  ·  ${dansCat.length} outil${dansCat.length>1?'s':''}${nEc ? `  ·  ${nEc} écart${nEc>1?'s':''}` : ''}` });
         derCat = cat; derSous = null;
       }
-      if(sous && sous !== derSous){
-        corps.push([{ content: sous, colSpan: 5, styles: { fillColor: [225,231,225], textColor: charcoal, fontStyle: 'bold', fontSize: 7, cellPadding: { top: 0.5, bottom: 0.5, left: 1.5, right: 1.5 } } }]);
-      }
+      if(sous && sous !== derSous) flat.push({ kind: 'sous', cat, sous, h: hSub, text: sous });
       derSous = sous;
+      const desig = r.designation + ((r.quantiteAttendue||1) > 1 ? ' x' + r.quantiteAttendue : '');
+      const nLines = Math.max(1, pdf.splitTextToSize(desig, wDes - 2.6).length);
+      flat.push({ kind: 'row', r, cat, sous, desig, h: nLines * 2.9 + 1.0 });
+    });
+
+    // répartition en colonnes et en pagesDetail (hauteurs estimées, avec une petite marge)
+    const basPage = pageH - 14 - 2;
+    const pagesDetail = [];
+    let cols = [[], []], ci = 0, used = hHead, premiere = true;
+    const place = () => basPage - (premiere ? y : 12);
+    const nouvelleColonne = (it) => {
+      if(ci === 0) ci = 1; else { pagesDetail.push(cols); cols = [[], []]; ci = 0; premiere = false; }
+      used = hHead;
+      if(it.kind !== 'cat'){
+        cols[ci].push({ kind: 'cat', cat: it.cat, h: hBand, text: it.cat.toUpperCase() + '  (suite)' }); used += hBand;
+        if(it.kind === 'row' && it.sous){ cols[ci].push({ kind: 'sous', cat: it.cat, sous: it.sous, h: hSub, text: it.sous }); used += hSub; }
+      }
+    };
+    flat.forEach((it, idx) => {
+      let besoin = it.h;
+      if(it.kind === 'cat' && flat[idx+1]){ besoin += flat[idx+1].h; if(flat[idx+1].kind === 'sous' && flat[idx+2]) besoin += flat[idx+2].h; }
+      else if(it.kind === 'sous' && flat[idx+1]) besoin += flat[idx+1].h;
+      if(used + besoin > place()) nouvelleColonne(it);
+      cols[ci].push(it); used += it.h;
+    });
+    pagesDetail.push(cols);
+
+    const cellule = (it) => {
+      if(it.kind === 'cat') return [{ content: it.text, colSpan: 4, styles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', fontSize: 7.5, cellPadding: { top: 1.0, bottom: 1.0, left: 1.2, right: 1.2 } } }];
+      if(it.kind === 'sous') return [{ content: it.text, colSpan: 4, styles: { fillColor: [225,231,225], textColor: charcoal, fontStyle: 'bold', fontSize: 7, cellPadding: { top: 0.5, bottom: 0.5, left: 1.2, right: 1.2 } } }];
+      const r = it.r;
       const ecart = r.resultat && r.resultat !== 'Conforme';
       const fill = ecart ? (r.resultat === 'Usé' ? [253,246,225] : [253,236,236]) : null;
       const c = (content, extra = {}) => ({ content, styles: { ...(fill ? { fillColor: fill } : {}), ...extra } });
       const sp = surplusDe(r);
-      corps.push([
+      return [
         c(r.reference, { font: 'courier', fontSize: 6.5 }),
-        c(r.designation + ((r.quantiteAttendue||1) > 1 ? ' x' + r.quantiteAttendue : '')),
+        c(it.desig),
         c(nbTexte(r), { halign: 'center' }),
-        c((libEcart(r.resultat) || '—') + (sp ? ` (+${sp})` : ''), { halign: 'center', fontStyle: 'bold' }),
-        c(commentaireDe(r))
-      ]);
+        c((libEcart(r.resultat) || '—') + (sp ? ` (+${sp})` : ''), { halign: 'center', fontStyle: 'bold' })
+      ];
+    };
+    let finalY = y;
+    pagesDetail.forEach((cp, pi) => {
+      if(pi > 0){ pdf.addPage(); }
+      const startY = pi === 0 ? y : 12;
+      let basColonnes = startY;
+      cp.forEach((colRows, k) => {
+        if(!colRows.length) return;
+        const x = margin + k * (colLarg + gapCol);
+        pdf.autoTable({
+          startY, margin: { left: x, right: pageW - x - colLarg, top: 12, bottom: 14 }, tableWidth: colLarg,
+          head: [["Référence", "Désignation", "Nb", "Résultat"]],
+          body: colRows.map(cellule),
+          theme: 'grid',
+          styles: { fontSize: 7, cellPadding: { top: 0.4, bottom: 0.4, left: 1.2, right: 1.2 }, lineColor: [225,228,225], lineWidth: 0.15, overflow: 'linebreak', valign: 'middle' },
+          headStyles: { fillColor: [70,78,88], textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 7, cellPadding: { top: 0.9, bottom: 0.9, left: 1.2, right: 1.2 } },
+          columnStyles: { 0:{cellWidth:wRef}, 1:{cellWidth:wDes}, 2:{cellWidth:wNb, halign:'center'}, 3:{cellWidth:wRes, halign:'center'} },
+          didParseCell: (d) => {
+            if(d.section === 'body' && d.column.index === 3 && d.cell.colSpan === 1){
+              const v = d.cell.text.join('');
+              if(v.startsWith('Conforme')) d.cell.styles.textColor = [0,134,63];
+              else if(v.startsWith('Usé')) d.cell.styles.textColor = [143,100,18];
+              else if(v.startsWith('Cassé') || v.startsWith('Perdu')) d.cell.styles.textColor = [214,69,69];
+            }
+          }
+        });
+        basColonnes = Math.max(basColonnes, pdf.lastAutoTable.finalY);
+      });
+      finalY = basColonnes + 6;
     });
-    pdf.autoTable({
-      startY: y, margin: { left: margin, right: margin, bottom: 14, top: 12 }, tableWidth: contentW, rowPageBreak: 'avoid',
-      head: [["Référence", "Désignation", "Nombre", "Résultat", "Commentaire"]],
-      body: corps,
-      theme: 'grid',
-      styles: { fontSize: 7, cellPadding: { top: 0.4, bottom: 0.4, left: 1.5, right: 1.5 }, lineColor: [225,228,225], lineWidth: 0.15, overflow: 'linebreak', valign: 'middle' },
-      headStyles: { fillColor: [70,78,88], textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 7 },
-      columnStyles: { 0:{cellWidth:30}, 1:{cellWidth:'auto'}, 2:{cellWidth:20, halign:'center'}, 3:{cellWidth:24}, 4:{cellWidth:45} },
-      didParseCell: (d) => {
-        if(d.section === 'body' && d.column.index === 3 && d.cell.colSpan === 1){
-          const v = d.cell.text.join('');
-          if(v.startsWith('Conforme')) d.cell.styles.textColor = [0,134,63];
-          else if(v.startsWith('Usé')) d.cell.styles.textColor = [143,100,18];
-          else if(v.startsWith('Cassé') || v.startsWith('Perdu')) d.cell.styles.textColor = [214,69,69];
-        }
-      }
-    });
-    let finalY = pdf.lastAutoTable.finalY + 8;
 
     /* Statut du document + signatures, en bas de la dernière page */
     const archive = !!(inv.valideParAgent && inv.valideParAdmin);
