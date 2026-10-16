@@ -1109,20 +1109,11 @@ function myServanteId(){
   return mine ? mine.id : null;
 }
 
+function peutArchiver(){ return hasPermission('servantesInventaire') || isAdminUser(); }
+/* Inventaires clôturés mais pas encore signés et archivés (scan envoyé). */
 function computePendingValidationCount(){
-  if(!currentUser) return 0;
-  let count = 0;
-  if(hasPermission('adminApproval')){
-    count += mouvementsAllCache.filter(m => m.valideParAgent && !m.valideParAdmin).length;
-    count += inventairesAllCache.filter(i => i.valideParAgent && !i.valideParAdmin).length;
-  } else if(currentUser.role === 'agent'){
-    const sid = myServanteId();
-    if(sid){
-      count += mouvementsAllCache.filter(m => m.servanteId===sid && !m.valideParAgent).length;
-      count += inventairesAllCache.filter(i => i.servanteId===sid && !i.valideParAgent && !i.brouillon).length;
-    }
-  }
-  return count;
+  if(!currentUser || !peutArchiver()) return 0;
+  return inventairesAllCache.filter(i => !i.brouillon && !i.valideParAdmin && !i.annule).length;
 }
 
 function updatePendingBadge(){
@@ -1262,7 +1253,7 @@ function attachListeners(){
     if(currentView === 'parametres' || currentView === 'administration' || currentView === 'agents') renderCurrentView();
   });
   onSnapshot(doc(db,'parametres','securite'), (snap)=>{
-    securiteCache = { modeTest:false, separationTaches:false, ...(snap.exists() ? snap.data() : {}) };
+    securiteCache = { modeTest:false, ...(snap.exists() ? snap.data() : {}), separationTaches:false };   // la séparation des tâches n'existe plus
     if(['parametres','journal','servantes'].includes(currentView)) renderCurrentView();
   });
   onSnapshot(collection(db,'mouvements'), (snap)=>{
@@ -2010,7 +2001,6 @@ function renderParametresView(){
       </div>
       <p style="font-size:12px;color:var(--steel);margin:0 0 14px 28px;">À désactiver quand l'application est en service réel : les éléments validés sont alors verrouillés et ne peuvent plus qu'être <b>annulés avec un motif</b> (ils restent dans l'historique).</p>
       <div class="checkbox-row">
-        <input type="checkbox" id="sec-separation"><label for="sec-separation"><b>Séparation des tâches</b> — la personne qui a réalisé un inventaire ou un mouvement ne peut pas l'approuver elle-même.</label>
       </div>
     </div>` : ''}
 
@@ -2047,21 +2037,19 @@ function renderParametresView(){
   `;
 
   (function bindSecurite(){
-    const mt = document.getElementById('sec-mode-test'), sp = document.getElementById('sec-separation');
-    if(!mt || !sp) return;
+    const mt = document.getElementById('sec-mode-test');
+    if(!mt) return;
     mt.checked = securiteCache.modeTest === true;
-    sp.checked = securiteCache.separationTaches === true;
     const save = async ()=>{
       try{
         await setDoc(doc(db,'parametres','securite'), {
-          modeTest: mt.checked, separationTaches: sp.checked,
+          modeTest: mt.checked, separationTaches: false,
           majPar: `${currentUser.prenom} ${currentUser.nom}`, majLe: nowIso()
         });
         showToast("Réglage enregistré.", 'success');
       }catch(err){ showToast("Erreur : " + err.message, 'error'); }
     };
     mt.addEventListener('change', save);
-    sp.addEventListener('change', save);
   })();
 
   function drawRoles(){
@@ -2776,7 +2764,7 @@ function renderDashboardGlobal(main){
       ${tile(echangesEnAttente, 'Échanges en attente', echangesEnAttente ? 'accent-amber' : '')}
       ${tile(enRetard.length, 'Inventaires en retard', enRetard.length ? 'accent-red' : '')}
       ${tile(bientot.length, 'Inventaires à venir (30j)', bientot.length ? 'accent-amber' : '')}
-      ${tile(pendingValidationCount, 'En attente de mon approbation', pendingValidationCount ? 'accent-amber' : '')}
+      ${tile(pendingValidationCount, 'Inventaires à signer et archiver', pendingValidationCount ? 'accent-amber' : '')}
     </div>
     <div class="section-label">Écarts constatés par garage (cumulés)</div>
     <div class="panel" style="padding:18px 20px;">
@@ -3136,7 +3124,7 @@ function openReattribuerServanteModal(servanteId){
 
 /* ============ SERVANTE DETAIL ============ */
 async function logMouvement(mvt, opts={}){
-  const auto = !!opts.preValide;
+  const auto = true;   // plus de validation intermédiaire : tout mouvement est validé d'office
   await addDoc(collection(db,'mouvements'), {
     ...mvt,
     utilisateur: currentUser.matricule,
@@ -3540,7 +3528,7 @@ async function loadInventaires(servanteId){
     const all = everything.filter(inv => !inv.brouillon).sort((a,b)=> new Date(b.dateInventaire) - new Date(a.dateInventaire));
     const pending = all.filter(inv => !(inv.valideParAgent && inv.valideParAdmin));
     const archived = all.filter(inv => inv.valideParAgent && inv.valideParAdmin);
-    const canArchive = canValidateAdminStep();
+    const canArchive = peutArchiver();
     const dCourte = iso => iso ? new Date(iso).toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric'}) : '—';
     const pills = (inv) => {
       const ecarts = (inv.resultats||[]).filter(r=>r.resultat!=='Conforme');
@@ -3590,11 +3578,10 @@ async function loadInventaires(servanteId){
           <button class="btn btn-primary btn-sm" data-pdf-inv="${inv.id}">① Télécharger le PDF à signer</button>
           ${canArchive ? `<button class="btn btn-primary btn-sm" data-scan-inv="${inv.id}">② Envoyer le scan signé</button>` : `<span style="font-size:12.5px;color:var(--steel);">② L'archivage est fait par un responsable.</span>`}
         </div>
-        ${isAdminUser() ? `<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-secondary btn-sm" data-sanscan-inv="${inv.id}">Archiver sans scan</button>
-          <button class="btn btn-secondary btn-sm" data-reopen-inv2="${inv.id}">Rouvrir / corriger</button>
-          <button class="btn btn-danger btn-sm" data-del-inv="${inv.id}">Supprimer</button>
-        </div>` : ''}
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+          ${canArchive ? `<button class="btn btn-secondary btn-sm" data-reopen-inv2="${inv.id}">Rouvrir / corriger</button>` : ''}
+          ${isAdminUser() ? `<button class="btn btn-secondary btn-sm" data-sanscan-inv="${inv.id}">Archiver sans scan</button><button class="btn btn-danger btn-sm" data-del-inv="${inv.id}">Supprimer</button>` : ''}
+        </div>
       </div>`;
     }).join('');
     const archivedHtml = archived.slice(0,5).map(inv => {
@@ -3661,7 +3648,7 @@ async function loadInventaires(servanteId){
 async function archiverInventaire(inventaireId, servanteId, files, opts){
   opts = opts || {};
   const s = servantesCache.find(x=>x.id===servanteId); if(!s) return;
-  if(!canValidateAdminStep()){ showToast("L'archivage est réservé à un responsable.", 'warning'); return; }
+  if(!peutArchiver()){ showToast("Vous n'avez pas le droit d'archiver un inventaire.", 'warning'); return; }
   try{
     const invSnap = await getDoc(doc(db,'inventaires',inventaireId));
     if(!invSnap.exists()) return;
@@ -4449,8 +4436,9 @@ function openInventaireModal(servanteId){
   const roleTxt = String(currentUser.role || '').toLowerCase();
   demanderRealisateur({
     prenom: currentUser.prenom, nom: currentUser.nom,
-    fonction: /magasin/.test(roleTxt) ? 'Magasinier' : (/brigadier/.test(roleTxt) ? 'Brigadier' : '')
+    fonction: (()=>{ try{ const m = localStorage.getItem('sv_fonction_' + currentUser.matricule); if(m) return m; }catch(e){} return /magasin/.test(roleTxt) ? 'Magasinier' : (/brigadier/.test(roleTxt) ? 'Brigadier' : ''); })()
   }, (r) => {
+    try{ localStorage.setItem('sv_fonction_' + currentUser.matricule, r.fonction); }catch(e){}
     data.realiseParNom = `${r.prenom} ${r.nom}`.trim();
     data.realiseParPrenom = r.prenom; data.realiseParNomFamille = r.nom; data.realiseFonction = r.fonction;
     addDoc(collection(db,'inventaires'), data)
@@ -4539,6 +4527,17 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     enTrop: (invData.enTrop||[]).map(e => ({ ...e })),
     date: isoToDateInput(invData.dateInventaire)
   };
+  // Outils ajoutés à la servante depuis le début de l'inventaire (catalogue chargé, ajout manuel…) : ils rejoignent la liste.
+  let majDotation = 0;
+  if(s){
+    const presents = new Set(state.resultats.map(r => r.localId));
+    (s.outilsAssignes||[]).filter(t => t.actif && !presents.has(t.localId)).forEach(t => {
+      state.resultats.push({ commentaire:'', photoUrl:'', quantiteAttendue: t.quantite || 1, quantiteTrouvee: null, localId: t.localId, outilId: t.outilId || null,
+                             reference: t.reference, designation: t.designation, categorie: t.categorie || '', groupe: t.groupe || '', ordre: t.ordre || 0, resultat: null });
+      majDotation++;
+    });
+  }
+  state.resultats.sort((a,b) => (a.ordre || 999999) - (b.ordre || 999999));   // les outils ajoutés (ordre -1) viennent en tête
   const RES = [
     { v:'Conforme', cls:'ok',  ico:'✓' },
     { v:'Manquant', lib:'Perdu', cls:'bad', ico:'✕' },
@@ -4550,26 +4549,29 @@ function openInventaireEditor(servanteId, invId, invData, opts){
   let activeFilter = 'all';
   const numero = (s && s.agentMatricule) || invData.numeroServante || '—';
 
-  const rowHtml = (r) => `
+  const rowHtml = (r) => {
+    const ouvert = r.quantiteAttendue > 1 || r.ajoute || r.retire || r.quantiteOrig !== undefined ||
+                   (r.resultat === 'Conforme' && Number.isFinite(r.quantiteTrouvee) && r.quantiteTrouvee !== r.quantiteAttendue);
+    return `
     <div class="inv-row" data-row="${r.localId}">
       <div class="inv-row-top">
         <div class="inv-meta">
-          <div class="inv-desig">${escapeHtml(r.designation)}${r.quantiteAttendue>1 ? ` <b>× ${r.quantiteAttendue}</b>` : ''}</div>
-          <div class="inv-ref">${escapeHtml(r.reference)}${r.categorie ? ' · ' + escapeHtml(r.categorie) : ''}</div>
-          <div class="inv-qty" style="font-size:12.5px;margin-top:4px;">Nombre trouvé en bon état : <input type="number" min="0" step="1" inputmode="numeric" data-qty="${r.localId}" style="width:70px;padding:5px 7px;border:1.5px solid var(--line);border-radius:6px;"> / <input type="number" min="1" step="1" inputmode="numeric" data-att="${r.localId}" value="${r.quantiteAttendue}" title="Quantité attendue (modifiable)" style="width:58px;padding:5px 7px;border:1.5px solid var(--line);border-radius:6px;"> <span data-surplus="${r.localId}" style="color:#8f6412;font-weight:700;margin-left:6px;"></span> <a href="#" data-retire="${r.localId}" style="font-size:12px;margin-left:10px;white-space:nowrap;"></a></div>
+          <div class="inv-desig">${escapeHtml(r.designation)}${r.quantiteAttendue>1 ? ` <b>× ${r.quantiteAttendue}</b>` : ''}${r.ajoute ? ' <span class="pill pill-green" style="margin-left:6px;">Ajouté</span>' : ''}</div>
+          <div class="inv-ref">${escapeHtml(r.reference)}${r.categorie ? ' · ' + escapeHtml(r.categorie) : ''} <a href="#" data-more="${r.localId}" style="margin-left:8px;font-size:12px;">⋯ plus</a></div>
         </div>
         <div class="inv-btns">
           ${RES.map(x => `<button type="button" class="inv-btn inv-${x.cls}" data-set="${x.v}" data-for="${r.localId}">${x.ico} ${x.lib || x.v}</button>`).join('')}
         </div>
       </div>
+      <div class="inv-qty" data-qtybox="${r.localId}" style="display:${ouvert ? 'block' : 'none'};font-size:12.5px;margin-top:6px;">Nombre trouvé en bon état : <input type="number" min="0" step="1" inputmode="numeric" data-qty="${r.localId}" style="width:70px;padding:5px 7px;border:1.5px solid var(--line);border-radius:6px;"> / <input type="number" min="1" step="1" inputmode="numeric" data-att="${r.localId}" value="${r.quantiteAttendue}" title="Quantité attendue (modifiable)" style="width:58px;padding:5px 7px;border:1.5px solid var(--line);border-radius:6px;"> <span data-surplus="${r.localId}" style="color:#8f6412;font-weight:700;margin-left:6px;"></span> <a href="#" data-retire="${r.localId}" style="font-size:12px;margin-left:10px;white-space:nowrap;"></a></div>
       <div class="inv-extra" data-extra="${r.localId}" style="display:none;">
-        <textarea rows="2" data-comment="${r.localId}" placeholder="Explication de l'écart (obligatoire) : où, quand, pourquoi…"></textarea>
+        <textarea rows="2" data-comment="${r.localId}" placeholder="Précision sur l'écart (facultatif)"></textarea>
         <div class="inv-photo-line">
           <button type="button" class="btn btn-secondary btn-sm" data-photo="${r.localId}">📷 Ajouter une photo</button>
           <span data-photo-state="${r.localId}"></span>
         </div>
       </div>
-    </div>`;
+    </div>`; };
 
   openModal(`
     <style>
@@ -4622,16 +4624,16 @@ function openInventaireEditor(servanteId, invId, invData, opts){
       <button type="button" class="inv-chip" data-filter="ecarts">Écarts</button>
     </div>
     <div class="inv-toolbar" style="margin-top:0;">
+      <button type="button" class="btn btn-primary btn-sm" id="inv-add-outil">+ Ajouter un outil</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="inv-all-ok">✓ Tout le reste est conforme</button>
       <button type="button" class="btn btn-secondary btn-sm" id="inv-scan">📷 Scanner un outil</button>
-      <button type="button" class="btn btn-secondary btn-sm" id="inv-all-ok">Marquer « Conforme » tout ce qui reste</button>
     </div>
 
     <div class="inv-list" id="inv-list">${(()=>{ let last = null, out = ''; state.resultats.forEach(r => { const g = r.groupe || ''; if(g !== last){ out += `<div class="inv-grp">${escapeHtml(g || 'Autres outils')}</div>`; last = g; } out += rowHtml(r); }); return out; })()}</div>
 
-    <div class="inv-section">
-      <div style="font-weight:700;">Outils trouvés en plus <span style="font-weight:400;color:var(--steel);font-size:12.5px;">(l'agent les possède mais ils ne sont pas dans la liste)</span></div>
+    <div class="inv-section" style="${state.enTrop.length ? '' : 'display:none;'}">
+      <div style="font-weight:700;">Outils trouvés en plus <span style="font-weight:400;color:var(--steel);font-size:12.5px;">(saisis avant la mise à jour de l'application)</span></div>
       <div id="inv-trop-list"></div>
-      <button type="button" class="btn btn-secondary btn-sm" id="inv-add-trop" style="margin-top:8px;">+ Ajouter un outil que l'agent possède</button>
     </div>
 
     <div id="inv-confirm" class="inv-confirm" style="display:none;"></div>
@@ -4677,7 +4679,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     row.querySelectorAll('[data-set]').forEach(b => b.classList.toggle('sel', !r.retire && b.dataset.set === r.resultat));
     row.style.opacity = r.retire ? '0.6' : '';
     const lienRetire = $(`[data-retire="${id}"]`);
-    if(lienRetire) lienRetire.textContent = r.retire ? "↩ Remettre dans la liste (hors dotation)" : "L'agent n'a pas cet outil : le retirer de la liste";
+    if(lienRetire) lienRetire.textContent = r.ajoute ? "Annuler l'ajout de cet outil" : (r.retire ? "↩ Remettre dans la liste (hors dotation)" : "L'agent n'a pas cet outil : le retirer de la liste");
     const att = $(`[data-att="${id}"]`);
     if(att && document.activeElement !== att) att.value = r.quantiteAttendue;
     const extra = $(`[data-extra="${id}"]`);
@@ -4748,10 +4750,23 @@ function openInventaireEditor(servanteId, invId, invData, opts){
   // --- clics sur la liste (délégation)
   $('#inv-list').addEventListener('click', (e)=>{
     const b = e.target.closest('[data-set]');
+    const plus = e.target.closest('[data-more]');
+    if(plus){
+      e.preventDefault();
+      const box = $(`[data-qtybox="${plus.dataset.more}"]`);
+      if(box) box.style.display = box.style.display === 'none' ? 'block' : 'none';
+      return;
+    }
     const lr = e.target.closest('[data-retire]');
     if(lr){
       e.preventDefault();
       const r = rowOf(lr.dataset.retire);
+      if(r.ajoute){
+        state.resultats = state.resultats.filter(x => x !== r);
+        const rowEl = $(`[data-row="${r.localId}"]`); if(rowEl) rowEl.remove();
+        refreshProgress(); scheduleSave();
+        return;
+      }
       if(r.retire){ r.retire = false; r.resultat = null; r.quantiteTrouvee = null; }
       else { r.retire = true; r.resultat = 'Conforme'; r.commentaire = ''; r.photoUrl = ''; r.quantiteTrouvee = r.quantiteAttendue; }
       refreshRow(r.localId); refreshProgress(); scheduleSave();
@@ -4810,10 +4825,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
   });
 
   // --- outils en trop
-  $('#inv-add-trop').addEventListener('click', ()=>{
-    state.enTrop.push({ id: uid(), designation:'', reference:'', commentaire:'', photoUrl:'', quantite:1, ajouter:true, categorie:'Accessoires' });
-    drawTrop(); scheduleSave();
-  });
+  // (l'ajout d'un outil se fait maintenant par « + Ajouter un outil » : la ligne apparaît dans la liste)
   $('#inv-trop-list').addEventListener('input', (e)=>{
     const f = e.target.closest('[data-trop-field]'); if(!f) return;
     const item = state.enTrop.find(x => x.id === f.dataset.id); if(!item) return;
@@ -4878,11 +4890,79 @@ function openInventaireEditor(servanteId, invId, invData, opts){
   $('#inv-all-ok').addEventListener('click', ()=>{
     const restants = state.resultats.filter(r => !r.resultat);
     if(!restants.length){ showToast("Tous les outils sont déjà pointés.", 'info'); return; }
-    showConfirmModal(`Marquer ${restants.length} outil${restants.length>1?'s':''} non pointé${restants.length>1?'s':''} comme « Conforme » ? Faites-le seulement si vous les avez tous vérifiés.`, async ()=>{
-      restants.forEach(r => { r.resultat = 'Conforme'; if(r.quantiteTrouvee === null || r.quantiteTrouvee === undefined) r.quantiteTrouvee = r.quantiteAttendue; });
-      await flushSave();
-      openInventaireEditor(servanteId, invId, { ...invData, resultats: state.resultats, enTrop: state.enTrop, dateInventaire: dateInputToIso(state.date) });
-    }, { title:'Tout marquer conforme', confirmLabel:'Oui, tout est conforme', danger:false });
+    restants.forEach(r => { r.resultat = 'Conforme'; if(r.quantiteTrouvee === null || r.quantiteTrouvee === undefined) r.quantiteTrouvee = r.quantiteAttendue; refreshRow(r.localId); });
+    refreshProgress(); scheduleSave();
+    showToast(`${restants.length} outil${restants.length>1?'s':''} marqué${restants.length>1?'s':''} conforme${restants.length>1?'s':''}. Corrigez ceux qui ne le sont pas.`, 'success');
+  });
+
+  // --- ajouter un outil à l'inventaire (catalogue ou nouvel outil) : la ligne apparaît tout de suite dans la liste
+  $('#inv-add-outil').addEventListener('click', async ()=>{
+    await flushSave();
+    const reouvrir = (focus) => openInventaireEditor(servanteId, invId, { ...invData, resultats: state.resultats, enTrop: state.enTrop, dateInventaire: dateInputToIso(state.date) }, focus ? { focusLocal: focus } : undefined);
+    const presents = () => new Set(state.resultats.map(r => r.outilId).filter(Boolean));
+    const absents = () => { const pr = presents(); return outilsCache.filter(o => !pr.has(o.id)); };
+    const nouvelleLigne = (o, q, extra) => {
+      const ligne = { localId: uid(), outilId: o.id || null, reference: o.reference || '', designation: o.designation, categorie: o.categorie || '',
+                      groupe: "AJOUTÉS PENDANT L'INVENTAIRE", ordre: -1, quantiteAttendue: q, quantiteTrouvee: q, resultat: 'Conforme',
+                      commentaire: '', photoUrl: '', ajoute: true, ...(extra || {}) };
+      state.resultats.push(ligne);
+      return ligne.localId;
+    };
+    openModal(`
+      <div class="modal-head"><h3>Ajouter un outil à l'inventaire</h3><button class="modal-close" id="m-close">&times;</button></div>
+      <p style="font-size:13px;color:var(--steel);margin-bottom:10px;">L'agent possède un outil qui n'est pas dans la liste ? Cherchez-le au catalogue, ou créez-le. Il apparaîtra en haut de la liste.</p>
+      <input type="search" id="aj-search" placeholder="Rechercher au catalogue (nom, référence)…" autocomplete="off" style="width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:8px;font-size:14px;">
+      <div id="aj-results" style="max-height:32vh;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:8px;"></div>
+      <div id="aj-all" style="margin-top:8px;"></div>
+      <details style="margin-top:12px;"><summary style="cursor:pointer;font-weight:700;">L'outil n'existe pas au catalogue : le créer</summary>
+        <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px;">
+          <input type="text" id="aj-des" placeholder="Désignation" style="padding:9px 11px;border:1.5px solid var(--line);border-radius:8px;">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <input type="text" id="aj-ref" placeholder="Référence (si connue)" style="flex:1;min-width:130px;padding:9px 11px;border:1.5px solid var(--line);border-radius:8px;">
+            <select id="aj-cat" style="flex:1;min-width:130px;padding:9px 11px;border:1.5px solid var(--line);border-radius:8px;">${categoriesCache.map(c => `<option ${c.nom === 'Accessoires' ? 'selected' : ''}>${escapeHtml(c.nom)}</option>`).join('')}</select>
+            <input type="number" id="aj-qte" min="1" step="1" value="1" style="width:80px;padding:9px 11px;border:1.5px solid var(--line);border-radius:8px;" title="Quantité">
+          </div>
+          <div class="modal-error" id="aj-error"></div>
+          <button type="button" class="btn btn-primary" id="aj-create">Créer et ajouter à l'inventaire</button>
+        </div>
+      </details>
+      <div class="modal-actions"><button type="button" class="btn btn-secondary" id="m-cancel">Retour à l'inventaire</button></div>`);
+    const dessiner = () => {
+      const q = (document.getElementById('aj-search').value || '').trim().toLowerCase();
+      const liste = absents().filter(o => !q || [o.designation, o.reference, o.categorie].join(' ').toLowerCase().includes(q))
+                             .sort((a,b)=> String(a.designation).localeCompare(String(b.designation), 'fr', { numeric:true }));
+      document.getElementById('aj-results').innerHTML = liste.slice(0, 40).map(o => `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);">
+          <div><div style="font-weight:700;font-size:14px;">${escapeHtml(o.designation)}</div><div style="font-size:12px;color:var(--steel);">${escapeHtml(o.reference||'')} · ${escapeHtml(o.categorie||'')}</div></div>
+          <button type="button" class="btn btn-primary btn-sm" data-aj="${o.id}">Ajouter</button>
+        </div>`).join('') || `<div class="empty-state" style="padding:14px;"><p>${q ? 'Aucun outil du catalogue ne correspond.' : 'Tous les outils du catalogue sont déjà dans cet inventaire.'}</p></div>`;
+      const n = absents().length;
+      document.getElementById('aj-all').innerHTML = (!q && n > 1) ? `<button type="button" class="btn btn-secondary btn-sm" id="aj-tous">Ajouter les ${n} outils du catalogue qui manquent à cette servante</button>` : '';
+    };
+    dessiner();
+    document.getElementById('aj-search').addEventListener('input', dessiner);
+    document.getElementById('aj-results').addEventListener('click', async (ev)=>{
+      const b = ev.target.closest('[data-aj]'); if(!b) return;
+      const o = outilsCache.find(x => x.id === b.dataset.aj); if(!o) return;
+      const lid = nouvelleLigne(o, Math.max(1, o.quantiteStandard || 1));
+      await flushSave(); reouvrir(lid);
+    });
+    document.getElementById('aj-all').addEventListener('click', async (ev)=>{
+      if(!ev.target.closest('#aj-tous')) return;
+      absents().forEach(o => nouvelleLigne(o, Math.max(1, o.quantiteStandard || 1)));
+      await flushSave(); reouvrir();
+    });
+    document.getElementById('aj-create').addEventListener('click', async ()=>{
+      const des = sanitizeInput(document.getElementById('aj-des').value).toUpperCase();
+      const err = document.getElementById('aj-error');
+      if(des.length < 2){ err.textContent = "Indiquez la désignation de l'outil."; err.style.display = 'block'; return; }
+      const cat = document.getElementById('aj-cat').value;
+      const q = Math.max(1, parseInt(document.getElementById('aj-qte').value, 10) || 1);
+      const lid = nouvelleLigne({ designation: des, reference: sanitizeInput(document.getElementById('aj-ref').value).toUpperCase(), categorie: cat }, q, { categorieNouvelle: cat });
+      await flushSave(); reouvrir(lid);
+    });
+    document.getElementById('m-close').addEventListener('click', ()=>reouvrir());
+    document.getElementById('m-cancel').addEventListener('click', ()=>reouvrir());
   });
 
   // --- scan
@@ -4928,11 +5008,6 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     if(sansQte.length){
       return { ok:false, msg:`${sansQte.length} outil${sansQte.length>1?'s':''} en plusieurs exemplaires : indiquez combien de pièces sont conformes.`, first: sansQte[0].localId, filter:'ecarts' };
     }
-    const sansComment = state.resultats.filter(r => r.resultat !== 'Conforme' && (r.commentaire||'').trim().length < 3);
-    if(sansComment.length){
-      sansComment.forEach(r => { const ta = $(`[data-comment="${r.localId}"]`); if(ta) ta.classList.add('err'); });
-      return { ok:false, msg:`${sansComment.length} écart${sansComment.length>1?'s':''} sans explication. Une courte explication est obligatoire pour chaque écart.`, first: sansComment[0].localId, filter:'ecarts' };
-    }
     const tropSans = state.enTrop.filter(e => !(e.designation||'').trim());
     if(tropSans.length){
       return { ok:false, msg:"Un outil en trop n'a pas de désignation. Renseignez-la ou supprimez la ligne.", first:null, filter:'all' };
@@ -4962,7 +5037,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
       <p style="font-size:12px;color:var(--steel);margin:8px 0;">Une fois clôturé, vous téléchargez le PDF, vous le faites signer, puis vous envoyez le scan : l'inventaire est alors archivé et les écarts sont enregistrés.</p>
       <div style="display:flex;gap:8px;justify-content:flex-end;">
         <button type="button" class="btn btn-secondary" id="inv-back">Retour</button>
-        <button type="button" class="btn btn-primary" id="inv-confirm-btn">Confirmer et clôturer</button>
+        <button type="button" class="btn btn-primary" id="inv-confirm-btn">Clôturer et télécharger le PDF</button>
       </div>`;
     box.scrollIntoView({ block:'center', behavior:'smooth' });
     $('#inv-back').addEventListener('click', ()=>{ box.style.display = 'none'; });
@@ -4978,10 +5053,12 @@ function openInventaireEditor(servanteId, invId, invData, opts){
         if(navigator.onLine) await fin; else fin.catch(()=>{});
         closeModal();
         if(currentServanteId === servanteId) setTimeout(()=>renderServanteDetail(servanteId), 250);
-        if(navigator.onLine) setTimeout(()=>openApresClotureModal(servanteId, invId), 400);
-        else showToast("Inventaire clôturé sur cet appareil. Il sera envoyé automatiquement au retour du réseau.", 'success');
+        if(navigator.onLine){
+          showToast("Inventaire clôturé : le PDF à faire signer est téléchargé. Après signature, envoyez le scan.", 'success');
+          downloadInventairePDF(invId, servanteId);
+        } else showToast("Inventaire clôturé sur cet appareil. Il sera envoyé automatiquement au retour du réseau.", 'success');
       }catch(err){
-        btn.disabled = false; btn.textContent = 'Confirmer et clôturer';
+        btn.disabled = false; btn.textContent = 'Clôturer et télécharger le PDF';
         showError("Erreur lors de la clôture : " + err.message);
       }
     });
@@ -4996,6 +5073,15 @@ function openInventaireEditor(servanteId, invId, invData, opts){
   drawTrop();
   state.resultats.forEach(r => { refreshRow(r.localId); const ta = $(`[data-comment="${r.localId}"]`); if(ta) ta.value = r.commentaire || ''; });
   refreshProgress();
+  if(majDotation){
+    scheduleSave();
+    showToast(`${majDotation} outil${majDotation>1?'s':''} ajouté${majDotation>1?'s':''} à la servante depuis le début de l'inventaire : ${majDotation>1?'ils sont':'il est'} dans la liste (à pointer).`, 'info');
+  }
+  if(opts.focusLocal){
+    const rowF = $(`[data-row="${opts.focusLocal}"]`);
+    if(rowF){ rowF.scrollIntoView({ block:'center' }); rowF.classList.add('flash'); setTimeout(()=>rowF.classList.remove('flash'), 2500); }
+    showToast("Outil ajouté en haut de la liste.", 'success');
+  }
   if(opts.focusCode){
     const code = String(opts.focusCode).trim().toLowerCase();
     const hit = state.resultats.find(r => String(r.reference||'').trim().toLowerCase() === code)
@@ -5024,6 +5110,25 @@ async function validerInventaireAgent(inventaireId, servanteId){
   }
 }
 
+/* Retrouve un outil au catalogue (référence ou désignation identique), sinon le crée. Renvoie son identifiant (ou null). */
+async function resoudreOuCreerOutil(e, inventaireId){
+  if(e.outilId) return e.outilId;
+  const norm = v => String(v || '').replace(/[\s.]+/g, '').toUpperCase();
+  const nr = norm(e.reference), nd = norm(e.designation);
+  const ex = outilsCache.find(x => (nr && norm(x.reference) === nr) || (!nr && nd && norm(x.designation) === nd));
+  if(ex) return ex.id;
+  try{
+    const cat = categoriesCache.some(c => c.nom === e.categorie) ? e.categorie : 'Accessoires';
+    const nouveau = await addDoc(collection(db,'outils'), {
+      reference: sanitizeInput(String(e.reference || '')).toUpperCase(), designation: sanitizeInput(String(e.designation || '')).toUpperCase(),
+      categorie: cat, sousCategorie: '', fabricant: '', photoUrl: e.photoUrl || null, quantiteStandard: 1,
+      createdAt: nowIso(), ajouteParInventaire: inventaireId
+    });
+    outilsCache.push({ id: nouveau.id, reference: String(e.reference || '').toUpperCase(), designation: String(e.designation || '').toUpperCase(), categorie: cat });
+    return nouveau.id;
+  }catch(errCat){ return null; }   // droits insuffisants : l'outil reste ajouté à la servante seulement
+}
+
 /* Applique les écarts d'un inventaire : sorties de dotation, mouvements, date du dernier inventaire. */
 async function appliquerEcartsInventaire(inv, inventaireId, servanteId){
   const s = servantesCache.find(x=>x.id===servanteId);
@@ -5043,6 +5148,22 @@ async function appliquerEcartsInventaire(inv, inventaireId, servanteId){
           motif: `Quantité corrigée de ${r.quantiteOrig} à ${r.quantiteAttendue} lors de l'inventaire du ${formatDate(inv.dateInventaire)}`
         }, { preValide: true });
       }
+    }
+    // outils ajoutés pendant l'inventaire : ils entrent dans la dotation (et au catalogue s'ils n'y étaient pas)
+    for(const r of (inv.resultats||[]).filter(x => x.ajoute && !x.retire)){
+      const oid = await resoudreOuCreerOutil({ outilId: r.outilId, reference: r.reference, designation: r.designation, categorie: r.categorieNouvelle || r.categorie, photoUrl: r.photoUrl }, inventaireId);
+      const o = outilsCache.find(x => x.id === oid) || {};
+      const iAncien = oid ? newOutilsAssignes.findIndex(t => t.outilId === oid) : -1;
+      const entree = { localId: r.localId, outilId: oid, reference: r.reference || '—', designation: r.designation, categorie: o.categorie || r.categorie || '',
+                       groupe: o.groupe || '', ordre: o.ordre || 0, quantite: r.quantiteAttendue || 1, numeroSerie: '', dateAttribution: nowIso(), actif: true, etat: 'En service' };
+      if(iAncien >= 0) newOutilsAssignes = newOutilsAssignes.map((t, i) => i === iAncien ? { ...t, ...entree } : t);
+      else newOutilsAssignes = [...newOutilsAssignes, entree];
+      dotationChangee = true;
+      await logMouvement({
+        quantite: r.quantiteAttendue || 1, servanteId, outilId: oid, reference: r.reference || '—', designation: r.designation,
+        type: 'attribution', inventaireId,
+        motif: `Ajouté à la dotation lors de l'inventaire du ${formatDate(inv.dateInventaire)}`
+      }, { preValide: true });
     }
     // outils que l'agent n'a pas : retirés de la dotation (sans être des écarts)
     for(const r of (inv.resultats||[]).filter(x => x.retire)){
@@ -5075,26 +5196,7 @@ async function appliquerEcartsInventaire(inv, inventaireId, servanteId){
     for(const e of (inv.enTrop||[])){
       if(e.ajouter === true){
         // l'agent possède cet outil : il entre dans la dotation de la servante
-        let outilIdAj = e.outilId || null;
-        if(!outilIdAj){
-          // outil inconnu du catalogue : on le retrouve (même référence ou même désignation), sinon on le crée
-          const norm = v => String(v || '').replace(/[\s.]+/g, '').toUpperCase();
-          const nr = norm(e.reference), nd = norm(e.designation);
-          const ex = outilsCache.find(x => (nr && norm(x.reference) === nr) || (!nr && nd && norm(x.designation) === nd));
-          if(ex) outilIdAj = ex.id;
-          else {
-            try{
-              const cat = categoriesCache.some(c => c.nom === e.categorie) ? e.categorie : 'Accessoires';
-              const nouveau = await addDoc(collection(db,'outils'), {
-                reference: sanitizeInput(String(e.reference || '')).toUpperCase(), designation: sanitizeInput(String(e.designation || '')).toUpperCase(),
-                categorie: cat, sousCategorie: '', fabricant: '', photoUrl: e.photoUrl || null, quantiteStandard: 1,
-                createdAt: nowIso(), ajouteParInventaire: inventaireId
-              });
-              outilIdAj = nouveau.id;
-              outilsCache.push({ id: nouveau.id, reference: String(e.reference || '').toUpperCase(), designation: String(e.designation || '').toUpperCase(), categorie: cat });
-            }catch(errCat){ /* droits insuffisants : l'outil reste ajouté à la servante seulement */ }
-          }
-        }
+        const outilIdAj = await resoudreOuCreerOutil(e, inventaireId);
         const o = outilsCache.find(x => x.id === outilIdAj) || { categorie: e.categorie || '' };
         const q = Math.max(1, parseInt(e.quantite, 10) || 1);
         const iActif = outilIdAj ? newOutilsAssignes.findIndex(t => t.actif && t.outilId === outilIdAj) : -1;
