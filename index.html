@@ -1308,8 +1308,12 @@ function closeModal(){
   document.getElementById('modal-box').innerHTML = '';
   document.getElementById('modal-box').classList.remove('modal-wide');
 }
+let _modalMouseDownSurFond = false;
+document.getElementById('modal-overlay').addEventListener('mousedown', (e)=>{ _modalMouseDownSurFond = (e.target.id === 'modal-overlay'); });
 document.getElementById('modal-overlay').addEventListener('click', (e)=>{
-  if(e.target.id === 'modal-overlay') closeModal();
+  // on ne ferme que si le clic a commencé ET fini sur le fond (pas en fin de sélection de texte), et jamais pendant un inventaire
+  if(e.target.id === 'modal-overlay' && _modalMouseDownSurFond && !document.getElementById('modal-box').classList.contains('modal-wide')) closeModal();
+  _modalMouseDownSurFond = false;
 });
 
 /* ============ TOASTS & CONFIRMATIONS (remplacent alert/confirm natifs) ============ */
@@ -4434,17 +4438,21 @@ function openInventaireModal(servanteId){
     valideParAdmin:false, valideParAdminMatricule:null, valideParAdminNom:null, valideParAdminLe:null
   };
   const roleTxt = String(currentUser.role || '').toLowerCase();
-  demanderRealisateur({
+  const defReal = {
     prenom: currentUser.prenom, nom: currentUser.nom,
     fonction: (()=>{ try{ const m = localStorage.getItem('sv_fonction_' + currentUser.matricule); if(m) return m; }catch(e){} return /magasin/.test(roleTxt) ? 'Magasinier' : (/brigadier/.test(roleTxt) ? 'Brigadier' : ''); })()
-  }, (r) => {
+  };
+  const creer = (r) => {
     try{ localStorage.setItem('sv_fonction_' + currentUser.matricule, r.fonction); }catch(e){}
     data.realiseParNom = `${r.prenom} ${r.nom}`.trim();
     data.realiseParPrenom = r.prenom; data.realiseParNomFamille = r.nom; data.realiseFonction = r.fonction;
     addDoc(collection(db,'inventaires'), data)
       .then(ref => openInventaireEditor(servanteId, ref.id, data))
       .catch(err => showToast("Impossible de démarrer l'inventaire : " + err.message, 'error'));
-  });
+  };
+  // fonction connue : l'inventaire démarre tout de suite (le nom se change avec « Modifier » en haut de l'inventaire)
+  if(defReal.fonction) creer({ prenom: defReal.prenom, nom: defReal.nom, fonction: defReal.fonction });
+  else demanderRealisateur(defReal, creer);
 }
 
 /* Nom, prénom et fonction de la personne qui réalise (et signera) l'inventaire. */
@@ -5002,7 +5010,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     }
     const nonPointes = state.resultats.filter(r => !r.resultat);
     if(nonPointes.length){
-      return { ok:false, msg:`${nonPointes.length} outil${nonPointes.length>1?'s':''} non pointé${nonPointes.length>1?'s':''}. Pointez-les, ou utilisez « Marquer Conforme tout ce qui reste ».`, first: nonPointes[0].localId, filter:'todo' };
+      return { ok:false, msg:`${nonPointes.length} outil${nonPointes.length>1?'s':''} non pointé${nonPointes.length>1?'s':''}. Pointez-les, ou utilisez « ✓ Tout le reste est conforme ».`, first: nonPointes[0].localId, filter:'todo' };
     }
     const sansQte = state.resultats.filter(r => r.quantiteAttendue > 1 && r.resultat !== 'Conforme' && (r.quantiteTrouvee === null || r.quantiteTrouvee === undefined));
     if(sansQte.length){
@@ -5014,7 +5022,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     }
     return { ok:true };
   }
-  $('#inv-finish').addEventListener('click', ()=>{
+  $('#inv-finish').addEventListener('click', async ()=>{
     showError('');
     const v = validate();
     if(!v.ok){
@@ -5025,43 +5033,25 @@ function openInventaireEditor(servanteId, invId, invData, opts){
       if(v.first){ const row = $(`[data-row="${v.first}"]`); if(row){ row.scrollIntoView({ block:'center', behavior:'smooth' }); row.classList.add('flash'); setTimeout(()=>row.classList.remove('flash'), 2000); } }
       return;
     }
-    const n = (x) => state.resultats.filter(r => r.resultat === x).length;
-    const box = $('#inv-confirm');
-    box.style.display = 'block';
-    box.innerHTML = `
-      <div style="font-weight:700;margin-bottom:6px;">Récapitulatif avant clôture</div>
-      <div style="font-size:13.5px;line-height:1.7;">
-        ${state.resultats.length} outils pointés : <b style="color:#00863f;">${n('Conforme') - state.resultats.filter(r => r.retire).length} conformes</b>${state.resultats.some(r => r.retire) ? ` · <b>${state.resultats.filter(r => r.retire).length} hors dotation</b>` : ''}${n('Manquant')?` · <b style="color:#d64545;">${n('Manquant')} perdu${n('Manquant')>1?'s':''}</b>`:''}${n('Cassé')?` · <b style="color:#d64545;">${n('Cassé')} cassé${n('Cassé')>1?'s':''}</b>`:''}${n('Usé')?` · <b style="color:#8f6412;">${n('Usé')} usé${n('Usé')>1?'s':''}</b>`:''}
-        ${state.enTrop.length ? `<br><b>${state.enTrop.length} outil${state.enTrop.length>1?'s':''} trouvé${state.enTrop.length>1?'s':''} en plus</b> (ajouté${state.enTrop.length>1?'s':''} à la dotation si la case est cochée, et au catalogue s'il est nouveau)` : ''}${state.resultats.some(r => r.quantiteOrig !== undefined) ? `<br><b>${state.resultats.filter(r => r.quantiteOrig !== undefined).length} quantité${state.resultats.filter(r => r.quantiteOrig !== undefined).length>1?'s':''} attendue${state.resultats.filter(r => r.quantiteOrig !== undefined).length>1?'s':''} corrigée${state.resultats.filter(r => r.quantiteOrig !== undefined).length>1?'s':''}</b>` : ''}
-      </div>
-      <p style="font-size:12px;color:var(--steel);margin:8px 0;">Une fois clôturé, vous téléchargez le PDF, vous le faites signer, puis vous envoyez le scan : l'inventaire est alors archivé et les écarts sont enregistrés.</p>
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button type="button" class="btn btn-secondary" id="inv-back">Retour</button>
-        <button type="button" class="btn btn-primary" id="inv-confirm-btn">Clôturer et télécharger le PDF</button>
-      </div>`;
-    box.scrollIntoView({ block:'center', behavior:'smooth' });
-    $('#inv-back').addEventListener('click', ()=>{ box.style.display = 'none'; });
-    $('#inv-confirm-btn').addEventListener('click', async ()=>{
-      const btn = $('#inv-confirm-btn'); btn.disabled = true; btn.textContent = 'Clôture…';
-      clearTimeout(saveTimer);
-      try{
-        const fin = updateDoc(doc(db,'inventaires',invId), {
-          resultats: state.resultats, enTrop: state.enTrop,
-          brouillon: false, dateInventaire: dateInputToIso(state.date), termineLe: nowIso(),
-          cloturePar: `${currentUser.prenom} ${currentUser.nom}`, clotureParMatricule: currentUser.matricule
-        });
-        if(navigator.onLine) await fin; else fin.catch(()=>{});
-        closeModal();
-        if(currentServanteId === servanteId) setTimeout(()=>renderServanteDetail(servanteId), 250);
-        if(navigator.onLine){
-          showToast("Inventaire clôturé : le PDF à faire signer est téléchargé. Après signature, envoyez le scan.", 'success');
-          downloadInventairePDF(invId, servanteId);
-        } else showToast("Inventaire clôturé sur cet appareil. Il sera envoyé automatiquement au retour du réseau.", 'success');
-      }catch(err){
-        btn.disabled = false; btn.textContent = 'Clôturer et télécharger le PDF';
-        showError("Erreur lors de la clôture : " + err.message);
-      }
-    });
+    const btn = $('#inv-finish'); btn.disabled = true; btn.textContent = 'Clôture…';
+    clearTimeout(saveTimer);
+    try{
+      const fin = updateDoc(doc(db,'inventaires',invId), {
+        resultats: state.resultats, enTrop: state.enTrop,
+        brouillon: false, dateInventaire: dateInputToIso(state.date), termineLe: nowIso(),
+        cloturePar: `${currentUser.prenom} ${currentUser.nom}`, clotureParMatricule: currentUser.matricule
+      });
+      if(navigator.onLine) await fin; else fin.catch(()=>{});
+      closeModal();
+      if(currentServanteId === servanteId) setTimeout(()=>renderServanteDetail(servanteId), 250);
+      if(navigator.onLine){
+        showToast("Inventaire terminé : le PDF à faire signer est téléchargé. Après signature, envoyez le scan.", 'success');
+        downloadInventairePDF(invId, servanteId);
+      } else showToast("Inventaire terminé sur cet appareil. Il sera envoyé automatiquement au retour du réseau.", 'success');
+    }catch(err){
+      btn.disabled = false; btn.textContent = "Terminer l'inventaire";
+      showError("Erreur lors de la clôture : " + err.message);
+    }
   });
 
   // --- indicateur de connexion
