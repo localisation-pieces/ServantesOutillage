@@ -3794,7 +3794,11 @@ async function downloadInventairePDF(inventaireId, servanteId){
     const charcoal = [32,36,42];
     const steel = [91,101,112];
     const numero = s.agentMatricule || inv.numeroServante || inv.agentMatricule || '—';
-    const resultats = inv.resultats || [];
+    // Un outil sans statut (jamais pointé — typiquement chargé via "Attribuer
+    // tout le catalogue" mais jamais réellement présent) n'a rien à montrer
+    // dans un rapport d'inventaire : seuls les outils réellement pointés
+    // (Conforme/Cassé/Usé/Manquant…) y figurent.
+    const resultats = (inv.resultats || []).filter(r => r.resultat);
     const enTrop = inv.enTrop || [];
 
     /* Bandeau d'en-tête */
@@ -4443,10 +4447,20 @@ async function validerInventaireAdmin(inventaireId, servanteId){
       showToast("Séparation des tâches : vous avez réalisé cet inventaire, un autre administrateur doit l'approuver.", 'warning');
       return;
     }
-    const nonConformes = (inv.resultats||[]).filter(r=>r.resultat!=='Conforme');
+    const nonConformes = (inv.resultats||[]).filter(r=>r.resultat && r.resultat!=='Conforme');
+    // Outils jamais pointés pendant l'inventaire (aucun statut — typiquement
+    // chargés en masse via "Attribuer tout le catalogue" mais jamais
+    // réellement présents dans la servante) : à la validation définitive,
+    // ils disparaissent purement et simplement de la dotation, sans mouvement
+    // à historiser puisqu'il n'y a rien de réel à constater.
+    const sansStatut = (inv.resultats||[]).filter(r=>!r.resultat);
     const typeMap = { 'Manquant':'manquant', 'Cassé':'casse', 'Usé':'usure' };
 
     let newOutilsAssignes = (s.outilsAssignes||[]);
+    if(sansStatut.length){
+      const idsSansStatut = new Set(sansStatut.map(r=>r.localId));
+      newOutilsAssignes = newOutilsAssignes.filter(t => !idsSansStatut.has(t.localId));
+    }
     for(const r of nonConformes){
       const attendue = r.quantiteAttendue || 1;
       const trouvee = Math.max(0, Math.min(attendue, Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : 0));
@@ -4473,7 +4487,7 @@ async function validerInventaireAdmin(inventaireId, servanteId){
         motif: `Outil en trop trouvé lors de l'inventaire du ${formatDate(inv.dateInventaire)}${e.commentaire ? ' — ' + e.commentaire : ''}`
       }, { preValide: true });
     }
-    if(nonConformes.length){
+    if(nonConformes.length || sansStatut.length){
       await updateDoc(doc(db,'servantes',servanteId), { outilsAssignes: newOutilsAssignes });
     }
     const servanteUpdate = { dernierInventaire: { date: inv.dateInventaire, inventaireId }, prochainInventairePrevu: null };
