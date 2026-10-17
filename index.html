@@ -2245,10 +2245,6 @@ function renderJournalInventairesView(){
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M3 12a9 9 0 1 0 3-6.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M3 4v5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 7v5l3 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Historique validé
       </button>
-      <button class="journal-tab ${journalTab==='remplacer'?'active':''}" id="journal-tab-remplacer">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        À remplacer${mouvementsAllCache.filter(mouvementARemplacer).length ? ` (${mouvementsAllCache.filter(mouvementARemplacer).length})` : ''}
-      </button>
     </div>
     <div id="journal-tab-content"></div>
   `;
@@ -2258,9 +2254,7 @@ function renderJournalInventairesView(){
   `));
   document.getElementById('journal-tab-planification').addEventListener('click', ()=>{ journalTab='planification'; renderCurrentView(); });
   document.getElementById('journal-tab-historique').addEventListener('click', ()=>{ journalTab='historique'; renderCurrentView(); });
-  document.getElementById('journal-tab-remplacer').addEventListener('click', ()=>{ journalTab='remplacer'; renderCurrentView(); });
   if(journalTab === 'planification') renderJournalPlanification();
-  else if(journalTab === 'remplacer') renderJournalARemplacer();
   else renderJournalHistorique();
 }
 
@@ -2698,7 +2692,7 @@ function renderDashboardGlobal(main){
   let outilsManquants=0, outilsCasses=0, outilsUses=0;
   servantesCache.forEach(s=>{
     (s.outilsAssignes||[]).forEach(t=>{
-      if(t.actif) return;
+      if(!t.actif) return;
       if(t.etat==='Manquant') outilsManquants++;
       else if(t.etat==='Cassé') outilsCasses++;
       else if(t.etat==='Usé') outilsUses++;
@@ -2726,7 +2720,6 @@ function renderDashboardGlobal(main){
 
   main.innerHTML = `
     <div class="page-head"><div><h2>Tableau de bord</h2><p class="sub">Vue d'ensemble de l'atelier</p></div></div>
-    ${indicateursHtml()}
     ${todayReminders.length ? `
       <div class="panel" style="border-color:var(--red);background:var(--red-pale);padding:14px 18px;margin-bottom:16px;">
         <b style="color:var(--red);">🔔 Rappel — ${todayReminders.length} inventaire${todayReminders.length>1?'s':''} programmé${todayReminders.length>1?'s':''} aujourd'hui ou en retard, équipe ${escapeHtml(currentUser.equipe)}</b>
@@ -2802,7 +2795,7 @@ function renderDashboardAgent(main){
   const outilsActifs = (s.outilsAssignes||[]).filter(t=>t.actif);
   let casses=0, uses=0, manquants=0;
   (s.outilsAssignes||[]).forEach(t=>{
-    if(t.actif) return;
+    if(!t.actif) return;
     if(t.etat==='Cassé') casses++;
     else if(t.etat==='Usé') uses++;
     else if(t.etat==='Manquant') manquants++;
@@ -3312,13 +3305,13 @@ function renderServanteDetail(servanteId){
     const ligne = t => `
       <div class="tool-row">
         <div class="meta">
-          <div class="desig">${escapeHtml(t.designation)}${(t.quantite||1)>1 ? ` <b>× ${t.quantite}</b>` : ''}</div>
+          <div class="desig">${escapeHtml(t.designation)}${(t.quantite||1)>1 ? ` <b>× ${t.quantite}</b>` : ''}${t.etat && t.etat !== 'En service' ? ` <span class="pill pill-${t.etat==='Usé'?'amber':'red'}" style="margin-left:6px;">${escapeHtml(libEcart(t.etat))}</span>` : ''}</div>
           <div class="ref">${escapeHtml(t.reference)}${t.numeroSerie ? ' · S/N ' + escapeHtml(t.numeroSerie) : ''}</div>
         </div>
         ${canMouvements || canAttribuer ? `
         <div class="tool-actions">
           ${canAttribuer ? `<button class="btn btn-secondary btn-sm" data-edit-dot="${t.localId}">Modifier</button>` : ''}
-          ${canMouvements ? `<button class="btn btn-secondary btn-sm" data-signaler="${t.localId}">Signaler…</button>` : ''}
+
         </div>` : ''}
       </div>`;
     toolsPanel.innerHTML = [...groupes.entries()].map(([g, list], i) => `
@@ -3334,41 +3327,22 @@ function renderServanteDetail(servanteId){
     });
   }
 
-  // Outils sortis de la dotation (manquants, cassés, usés…) : possibilité de les remettre en service
+  // Outils non possédés par l'agent (retirés de la liste) : repliés, avec possibilité de les remettre
   const sortis = (s.outilsAssignes||[]).filter(t => !t.actif);
   const outSection = document.getElementById('out-section');
   if(outSection && sortis.length){
     const peutRemettre = canMouvements || isAdminUser();
     outSection.innerHTML = `
-      ${sortis.filter(t => t.etat !== 'Hors dotation').length ? `<div class="section-label">Écarts à traiter : cassés, perdus, usés (${sortis.filter(t => t.etat !== 'Hors dotation').length})</div>` : ''}
-      <div class="panel" ${sortis.filter(t => t.etat !== 'Hors dotation').length ? '' : 'style="display:none;"'}>${sortis.filter(t => t.etat !== 'Hors dotation').map(t => {
-        const mv = mouvementsAllCache.filter(m => m.servanteId === servanteId && m.outilId && m.outilId === t.outilId && mouvementARemplacer(m))
-                                     .sort((a,b)=> new Date(b.date) - new Date(a.date))[0];
-        return `
-        <div class="tool-row">
-          <div class="meta">
-            <div class="desig">${escapeHtml(t.designation)} <span class="pill pill-${t.etat==='Usé'?'amber':'red'}" style="margin-left:6px;">${escapeHtml(libEcart(t.etat||'Retiré'))}</span></div>
-            <div class="ref">${escapeHtml(t.reference)}</div>
-          </div>
-          ${peutRemettre ? `<div class="tool-actions">
-            ${mv ? `<button class="btn btn-primary btn-sm" data-remplacer-mvt="${mv.id}">Remplacé (pièce neuve)</button>` : ''}
-            <button class="btn btn-secondary btn-sm" data-remettre="${t.localId}">${mv ? 'Retrouvé / remis en service' : 'Remettre en service'}</button>
-          </div>` : ''}
-        </div>`; }).join('')}</div>
-      ${sortis.filter(t => t.etat === 'Hors dotation').length ? `
       <details class="panel" style="margin-top:12px;">
-        <summary style="cursor:pointer;padding:12px 16px;font-weight:700;">Non possédés : outils que l'agent n'a pas (${sortis.filter(t => t.etat === 'Hors dotation').length})</summary>
-        ${sortis.filter(t => t.etat === 'Hors dotation').map(t => `
+        <summary style="cursor:pointer;padding:12px 16px;font-weight:700;">Non possédés : outils que l'agent n'a pas (${sortis.length})</summary>
+        ${sortis.map(t => `
         <div class="tool-row">
           <div class="meta"><div class="desig">${escapeHtml(t.designation)}</div><div class="ref">${escapeHtml(t.reference)}</div></div>
-          ${peutRemettre ? `<div class="tool-actions"><button class="btn btn-secondary btn-sm" data-remettre="${t.localId}">Remettre dans la dotation</button></div>` : ''}
+          ${peutRemettre ? `<div class="tool-actions"><button class="btn btn-secondary btn-sm" data-remettre="${t.localId}">Remettre dans la liste</button></div>` : ''}
         </div>`).join('')}
-      </details>` : ''}`;
+      </details>`;
     outSection.querySelectorAll('[data-remettre]').forEach(b=>{
       b.addEventListener('click', ()=>remettreOutilEnService(servanteId, b.dataset.remettre));
-    });
-    outSection.querySelectorAll('[data-remplacer-mvt]').forEach(b=>{
-      b.addEventListener('click', ()=>ouvrirRemplacement(b.dataset.remplacerMvt));
     });
   }
 
@@ -4433,7 +4407,7 @@ function openInventaireModal(servanteId){
     realiseParMatricule: currentUser.matricule, realiseParNom: `${currentUser.prenom} ${currentUser.nom}`,
     resultats: outils.slice().sort((a,b)=> (a.ordre||999999)-(b.ordre||999999)).map(t => ({
       localId: t.localId, outilId: t.outilId, reference: t.reference, designation: t.designation,
-      categorie: t.categorie || '', groupe: t.groupe || '', ordre: t.ordre || 0,
+      categorie: t.categorie || '', groupe: t.groupe || '', ordre: t.ordre || 0, etatPrecedent: (t.etat && t.etat !== 'En service') ? t.etat : '',
       quantiteAttendue: t.quantite || 1, quantiteTrouvee: null, resultat: null, commentaire: '', photoUrl: ''
     })),
     enTrop: [],
@@ -4544,9 +4518,32 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     const presents = new Set(state.resultats.map(r => r.localId));
     (s.outilsAssignes||[]).filter(t => t.actif && !presents.has(t.localId)).forEach(t => {
       state.resultats.push({ commentaire:'', photoUrl:'', quantiteAttendue: t.quantite || 1, quantiteTrouvee: null, localId: t.localId, outilId: t.outilId || null,
-                             reference: t.reference, designation: t.designation, categorie: t.categorie || '', groupe: t.groupe || '', ordre: t.ordre || 0, resultat: null });
+                             reference: t.reference, designation: t.designation, categorie: t.categorie || '', groupe: t.groupe || '', ordre: t.ordre || 0, etatPrecedent: (t.etat && t.etat !== 'En service') ? t.etat : '', resultat: null });
       majDotation++;
     });
+  }
+  // mention du dernier inventaire rappelée sur chaque ligne (brouillons déjà commencés compris)
+  if(s){
+    const parId = new Map((s.outilsAssignes||[]).map(t => [t.localId, t]));
+    state.resultats.forEach(r => { if(r.etatPrecedent === undefined){ const t = parId.get(r.localId); r.etatPrecedent = (t && t.etat && t.etat !== 'En service' && t.etat !== 'Hors dotation') ? t.etat : ''; } });
+  }
+  // Anciens « outils trouvés en plus » (saisis avec l'ancienne version) : ils deviennent de vraies lignes de la liste, en tête.
+  let nbConvertis = 0;
+  {
+    const norm = v => String(v || '').replace(/[\s.]+/g, '').toUpperCase();
+    const gardes = [];
+    state.enTrop.forEach(e => {
+      if(!String(e.designation || '').trim()) return;   // ligne vide : ignorée
+      const doublon = state.resultats.some(r => (e.outilId && r.outilId === e.outilId) || (norm(e.reference) && norm(r.reference) === norm(e.reference)));
+      if(!doublon){
+        const q = Math.max(1, parseInt(e.quantite, 10) || 1);
+        state.resultats.push({ localId: uid(), outilId: e.outilId || null, reference: e.reference || '', designation: String(e.designation).toUpperCase(), categorie: e.categorie || '',
+                               groupe: "OUTILS AJOUTÉS À LA LISTE", ordre: -1, quantiteAttendue: q, quantiteTrouvee: q, resultat: 'Conforme',
+                               commentaire: e.commentaire || '', photoUrl: e.photoUrl || '', ajoute: true, categorieNouvelle: e.categorie || '' });
+      }
+      nbConvertis++;
+    });
+    state.enTrop = gardes;
   }
   state.resultats.sort((a,b) => (a.ordre || 999999) - (b.ordre || 999999));   // les outils ajoutés (ordre -1) viennent en tête
   const RES = [
@@ -4567,7 +4564,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     <div class="inv-row" data-row="${r.localId}">
       <div class="inv-row-top">
         <div class="inv-meta">
-          <div class="inv-desig">${escapeHtml(r.designation)}${r.quantiteAttendue>1 ? ` <b>× ${r.quantiteAttendue}</b>` : ''}${r.ajoute ? ' <span class="pill pill-green" style="margin-left:6px;">Ajouté</span>' : ''}</div>
+          <div class="inv-desig">${escapeHtml(r.designation)}${r.quantiteAttendue>1 ? ` <b>× ${r.quantiteAttendue}</b>` : ''}${r.ajoute ? ' <span class="pill pill-green" style="margin-left:6px;">Ajouté</span>' : ''}${r.etatPrecedent ? ` <span class="pill pill-amber" style="margin-left:6px;" title="Mention du dernier inventaire : mettez Conforme si l'outil a été remplacé">Dernier inventaire : ${escapeHtml(libEcart(r.etatPrecedent))}</span>` : ''}</div>
           <div class="inv-ref">${escapeHtml(r.reference)}${r.categorie ? ' · ' + escapeHtml(r.categorie) : ''} <a href="#" data-more="${r.localId}" style="margin-left:8px;font-size:12px;">⋯ plus</a></div>
         </div>
         <div class="inv-btns">
@@ -5087,6 +5084,10 @@ function openInventaireEditor(servanteId, invId, invData, opts){
   drawTrop();
   state.resultats.forEach(r => { refreshRow(r.localId); const ta = $(`[data-comment="${r.localId}"]`); if(ta) ta.value = r.commentaire || ''; });
   refreshProgress();
+  if(nbConvertis){
+    scheduleSave();
+    showToast(`${nbConvertis} outil${nbConvertis>1?'s':''} saisi${nbConvertis>1?'s':''} en plus ${nbConvertis>1?'ont été placés':'a été placé'} dans la liste, en haut.`, 'info');
+  }
   if(majDotation){
     scheduleSave();
     showToast(`${majDotation} outil${majDotation>1?'s':''} ajouté${majDotation>1?'s':''} à la servante depuis le début de l'inventaire : ${majDotation>1?'ils sont':'il est'} dans la liste (à pointer).`, 'info');
@@ -5143,119 +5144,43 @@ async function resoudreOuCreerOutil(e, inventaireId){
   }catch(errCat){ return null; }   // droits insuffisants : l'outil reste ajouté à la servante seulement
 }
 
-/* Applique les écarts d'un inventaire : sorties de dotation, mouvements, date du dernier inventaire. */
+/* Applique un inventaire à la servante : chaque outil garde sa dernière mention (Conforme, Cassé, Perdu, Usé) et reste dans la liste.
+   Seuls les outils « non possédés » sortent ; les outils ajoutés entrent. Aucun mouvement n'est enregistré : l'inventaire archivé fait foi. */
 async function appliquerEcartsInventaire(inv, inventaireId, servanteId){
   const s = servantesCache.find(x=>x.id===servanteId);
-  const premier = !s.dernierInventaire;   // premier inventaire : la liste est simplement mise à jour, sans historique d'ajouts ni de retraits
-    const nonConformes = (inv.resultats||[]).filter(r=>r.resultat!=='Conforme');
-    const typeMap = { 'Manquant':'manquant', 'Cassé':'casse', 'Usé':'usure' };
+  let liste = (s.outilsAssignes||[]).slice();
 
-    let newOutilsAssignes = (s.outilsAssignes||[]);
-    let dotationChangee = false;
-    // quantités attendues corrigées pendant l'inventaire
-    for(const r of (inv.resultats||[])){
-      if(r.quantiteOrig !== undefined && r.quantiteOrig !== r.quantiteAttendue && !r.retire){
-        newOutilsAssignes = newOutilsAssignes.map(t => t.localId===r.localId ? {...t, quantite: r.quantiteAttendue} : t);
-        dotationChangee = true;
-        if(!premier) await logMouvement({
-          quantite: r.quantiteAttendue, servanteId, outilId: r.outilId || null, reference: r.reference || '—', designation: r.designation,
-          type: 'correction_quantite', inventaireId,
-          motif: `Quantité corrigée de ${r.quantiteOrig} à ${r.quantiteAttendue} lors de l'inventaire du ${formatDate(inv.dateInventaire)}`
-        }, { preValide: true });
-      }
-    }
-    // outils ajoutés pendant l'inventaire : ils entrent dans la dotation (et au catalogue s'ils n'y étaient pas)
-    for(const r of (inv.resultats||[]).filter(x => x.ajoute && !x.retire)){
-      const oid = await resoudreOuCreerOutil({ outilId: r.outilId, reference: r.reference, designation: r.designation, categorie: r.categorieNouvelle || r.categorie, photoUrl: r.photoUrl }, inventaireId);
-      const o = outilsCache.find(x => x.id === oid) || {};
-      const iAncien = oid ? newOutilsAssignes.findIndex(t => t.outilId === oid) : -1;
-      const entree = { localId: r.localId, outilId: oid, reference: r.reference || '—', designation: r.designation, categorie: o.categorie || r.categorie || '',
-                       groupe: o.groupe || '', ordre: o.ordre || 0, quantite: r.quantiteAttendue || 1, numeroSerie: '', dateAttribution: nowIso(), actif: true, etat: 'En service' };
-      if(iAncien >= 0) newOutilsAssignes = newOutilsAssignes.map((t, i) => i === iAncien ? { ...t, ...entree } : t);
-      else newOutilsAssignes = [...newOutilsAssignes, entree];
-      dotationChangee = true;
-      if(!premier) await logMouvement({
-        quantite: r.quantiteAttendue || 1, servanteId, outilId: oid, reference: r.reference || '—', designation: r.designation,
-        type: 'attribution', inventaireId,
-        motif: `Ajouté à la dotation lors de l'inventaire du ${formatDate(inv.dateInventaire)}`
-      }, { preValide: true });
-    }
-    // outils que l'agent n'a pas : retirés de la dotation (sans être des écarts)
-    for(const r of (inv.resultats||[]).filter(x => x.retire)){
-      newOutilsAssignes = newOutilsAssignes.map(t => t.localId===r.localId ? {...t, actif:false, etat:'Hors dotation'} : t);
-      dotationChangee = true;
-      if(!premier) await logMouvement({
-        quantite: r.quantiteOrig !== undefined ? r.quantiteOrig : (r.quantiteAttendue || 1), servanteId, outilId: r.outilId || null, reference: r.reference || '—', designation: r.designation,
-        type: 'retire_dotation', inventaireId,
-        motif: `Retiré de la dotation lors de l'inventaire du ${formatDate(inv.dateInventaire)} (l'agent ne possède pas cet outil)`
-      }, { preValide: true });
-    }
-    for(const r of nonConformes){
-      const attendue = r.quantiteAttendue || 1;
-      const trouvee = Math.max(0, Math.min(attendue, Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : 0));
-      const enEcart = attendue - trouvee;
-      if(trouvee > 0 && enEcart > 0){
-        // une partie seulement est en écart : le reste reste en service
-        newOutilsAssignes = newOutilsAssignes.map(t => t.localId===r.localId ? {...t, quantite: trouvee} : t);
-      } else {
-        newOutilsAssignes = newOutilsAssignes.map(t => t.localId===r.localId ? {...t, actif:false, etat:r.resultat} : t);
-      }
-      await logMouvement({
-        quantite: enEcart || attendue,
-        servanteId, outilId: r.outilId, reference: r.reference, designation: r.designation,
-        type: typeMap[r.resultat] || 'manquant',
-        inventaireId,
-        motif: `Constaté lors de l'inventaire du ${formatDate(inv.dateInventaire)}${r.commentaire ? ' — ' + r.commentaire : ''}`
-      }, { preValide: true });
-    }
-    for(const e of (inv.enTrop||[])){
-      if(e.ajouter === true){
-        // l'agent possède cet outil : il entre dans la dotation de la servante
-        const outilIdAj = await resoudreOuCreerOutil(e, inventaireId);
-        const o = outilsCache.find(x => x.id === outilIdAj) || { categorie: e.categorie || '' };
-        const q = Math.max(1, parseInt(e.quantite, 10) || 1);
-        const iActif = outilIdAj ? newOutilsAssignes.findIndex(t => t.actif && t.outilId === outilIdAj) : -1;
-        const iInactif = outilIdAj ? newOutilsAssignes.findIndex(t => !t.actif && t.outilId === outilIdAj) : -1;
-        if(iActif >= 0) newOutilsAssignes = newOutilsAssignes.map((t, i) => i === iActif ? { ...t, quantite: (t.quantite||1) + q } : t);
-        else if(iInactif >= 0) newOutilsAssignes = newOutilsAssignes.map((t, i) => i === iInactif ? { ...t, actif:true, etat:'En service', quantite:q, dateAttribution: nowIso() } : t);
-        else newOutilsAssignes = [...newOutilsAssignes, {
-          localId: uid(), outilId: outilIdAj, reference: e.reference || '—', designation: e.designation,
-          categorie: o.categorie || '', groupe: o.groupe || '', ordre: o.ordre || 0, quantite: q, numeroSerie: '',
-          dateAttribution: nowIso(), actif: true, etat: 'En service'
-        }];
-        dotationChangee = true;
-        await logMouvement({
-          quantite: q, servanteId, outilId: outilIdAj, reference: e.reference || '—', designation: e.designation,
-          type: 'attribution', inventaireId,
-          motif: `Ajouté à la dotation lors de l'inventaire du ${formatDate(inv.dateInventaire)}${e.commentaire ? ' — ' + e.commentaire : ''}`
-        }, { preValide: true });
-        continue;
-      }
-      await logMouvement({
-        servanteId, outilId: e.outilId || null, reference: e.reference || '—', designation: e.designation,
-        type: 'en_trop',
-        inventaireId,
-        motif: `Outil en trop trouvé lors de l'inventaire du ${formatDate(inv.dateInventaire)}${e.commentaire ? ' — ' + e.commentaire : ''}`
-      }, { preValide: true });
-    }
-    // Pièces trouvées en plus de la dotation (ex. 3 trouvées pour 2 attendues) : consignées comme « en trop »
-    for(const r of (inv.resultats||[])){
-      const surplus = (Number.isFinite(r.quantiteTrouvee) ? r.quantiteTrouvee : 0) - (r.quantiteAttendue || 1);
-      if(r.resultat === 'Conforme' && !r.retire && surplus > 0){
-        await logMouvement({
-          quantite: surplus, servanteId, outilId: r.outilId || null, reference: r.reference || '—', designation: r.designation,
-          type: 'en_trop', inventaireId,
-          motif: `${surplus} pièce${surplus>1?'s':''} en plus de la dotation, constatée${surplus>1?'s':''} lors de l'inventaire du ${formatDate(inv.dateInventaire)}`
-        }, { preValide: true });
-      }
-    }
-    if(dotationChangee || nonConformes.length){
-      await updateDoc(doc(db,'servantes',servanteId), { outilsAssignes: newOutilsAssignes });
-    }
-    const datePrec = s.dernierInventaire && s.dernierInventaire.date;
+  // 1. outils ajoutés pendant l'inventaire (et ancien « outils trouvés en plus »)
+  const aAjouter = [
+    ...(inv.resultats||[]).filter(x => x.ajoute && !x.retire).map(r => ({ r, oidDirect: r.outilId, src: { outilId: r.outilId, reference: r.reference, designation: r.designation, categorie: r.categorieNouvelle || r.categorie, photoUrl: r.photoUrl } })),
+    ...(inv.enTrop||[]).filter(e => e.ajouter === true).map(e => ({ r: { localId: uid(), reference: e.reference, designation: e.designation, categorie: e.categorie, quantiteAttendue: Math.max(1, parseInt(e.quantite, 10) || 1) }, src: { outilId: e.outilId, reference: e.reference, designation: e.designation, categorie: e.categorie, photoUrl: e.photoUrl } }))
+  ];
+  for(const { r, src } of aAjouter){
+    const oid = await resoudreOuCreerOutil(src, inventaireId);
+    const o = outilsCache.find(x => x.id === oid) || {};
+    const iAncien = oid ? liste.findIndex(t => t.outilId === oid) : -1;
+    const entree = { localId: r.localId, outilId: oid, reference: r.reference || '—', designation: r.designation, categorie: o.categorie || r.categorie || '',
+                     groupe: o.groupe || '', ordre: o.ordre || 0, quantite: r.quantiteAttendue || 1, numeroSerie: '', dateAttribution: nowIso(), actif: true, etat: 'En service' };
+    if(iAncien >= 0) liste = liste.map((t, i) => i === iAncien ? { ...t, ...entree } : t);
+    else liste = [...liste, entree];
+  }
+
+  // 2. chaque outil pointé : sa mention est conservée ; non possédé = sort de la liste ; quantité corrigée = nouvelle quantité
+  const parLocalId = new Map((inv.resultats||[]).map(r => [r.localId, r]));
+  liste = liste.map(t => {
+    const r = parLocalId.get(t.localId);
+    if(!r) return t;
+    if(r.retire) return { ...t, actif: false, etat: 'Hors dotation' };
+    const etat = (!r.resultat || r.resultat === 'Conforme') ? 'En service' : r.resultat;
+    const extra = (r.quantiteOrig !== undefined && r.quantiteOrig !== r.quantiteAttendue) ? { quantite: r.quantiteAttendue } : {};
+    return { ...t, actif: true, etat, ...extra };
+  });
+  await updateDoc(doc(db,'servantes',servanteId), { outilsAssignes: liste });
+
+  const datePrec = s.dernierInventaire && s.dernierInventaire.date;
   const plusRecent = !datePrec || new Date(inv.dateInventaire) >= new Date(datePrec);
   const servanteUpdate = { ...(plusRecent ? { dernierInventaire: { date: inv.dateInventaire, inventaireId } } : {}), prochainInventairePrevu: null };
-    await updateDoc(doc(db,'servantes',servanteId), servanteUpdate);
+  await updateDoc(doc(db,'servantes',servanteId), servanteUpdate);
   return servanteUpdate;
 }
 
