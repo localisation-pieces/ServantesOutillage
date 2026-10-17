@@ -4260,11 +4260,11 @@ async function downloadInventairePDF(inventaireId, servanteId){
         const dansCat = enrichis.filter(x => x.cat === cat);
         const nEc = dansCat.filter(x => x.r.resultat && x.r.resultat !== 'Conforme').length;
         corps.push([{ content: `${cat.toUpperCase()}   ·   ${dansCat.length} outil${dansCat.length>1?'s':''}${nEc ? `   ·   ${nEc} écart${nEc>1?'s':''}` : ''}`,
-                      colSpan: 5, styles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', fontSize: 8, cellPadding: { top: 1.1, bottom: 1.1, left: 1.5, right: 1.5 } } }]);
+                      colSpan: 5, styles: { fillColor: charcoal, textColor: 255, fontStyle: 'bold', fontSize: 8, cellPadding: { top: 0.8, bottom: 0.8, left: 1.5, right: 1.5 } } }]);
         derCat = cat; derSous = null;
       }
       if(sous && sous !== derSous){
-        corps.push([{ content: sous, colSpan: 5, styles: { fillColor: [225,231,225], textColor: charcoal, fontStyle: 'bold', fontSize: 7, cellPadding: { top: 0.5, bottom: 0.5, left: 1.5, right: 1.5 } } }]);
+        corps.push([{ content: sous, colSpan: 5, styles: { fillColor: [225,231,225], textColor: charcoal, fontStyle: 'bold', fontSize: 7, cellPadding: { top: 0.35, bottom: 0.35, left: 1.5, right: 1.5 } } }]);
       }
       derSous = sous;
       const ecart = r.resultat && r.resultat !== 'Conforme';
@@ -4280,11 +4280,11 @@ async function downloadInventairePDF(inventaireId, servanteId){
       ]);
     });
     pdf.autoTable({
-      startY: y, margin: { left: margin, right: margin, bottom: 14, top: 12 }, tableWidth: contentW, rowPageBreak: 'avoid',
+      startY: y, margin: { left: margin, right: margin, bottom: 12, top: 10 }, tableWidth: contentW, rowPageBreak: 'avoid',
       head: [["Référence", "Désignation", "Nombre", "Résultat", "Commentaire"]],
       body: corps,
       theme: 'grid',
-      styles: { fontSize: 7, cellPadding: { top: 0.4, bottom: 0.4, left: 1.5, right: 1.5 }, lineColor: [225,228,225], lineWidth: 0.15, overflow: 'linebreak', valign: 'middle' },
+      styles: { fontSize: 7, cellPadding: { top: 0.28, bottom: 0.28, left: 1.5, right: 1.5 }, lineColor: [225,228,225], lineWidth: 0.15, overflow: 'linebreak', valign: 'middle' },
       headStyles: { fillColor: [70,78,88], textColor: 255, fontStyle: 'bold', halign: 'left', fontSize: 7 },
       columnStyles: { 0:{cellWidth:30}, 1:{cellWidth:'auto'}, 2:{cellWidth:20, halign:'center'}, 3:{cellWidth:24}, 4:{cellWidth:45} },
       didParseCell: (d) => {
@@ -4307,17 +4307,17 @@ async function downloadInventairePDF(inventaireId, servanteId){
       : (archive
         ? `Inventaire archivé le ${formatDate(inv.valideParAdminLe).split(' à ')[0]}${inv.sansScan ? ' (sans scan signé)' : ' — scan signé conservé dans l\'application'}`
         : "À faire signer par l'agent et par la personne qui a réalisé l'inventaire, puis à scanner et archiver dans l'application");
-    const sigH = 34;
-    const sigY = pageH - 15 - sigH;
-    if(finalY > sigY - 16){ pdf.addPage(); finalY = 20; }
-    const statutY = sigY - 14;
+    const sigH = 28;
+    const sigY = pageH - 13 - sigH;
+    if(finalY > sigY - 12){ pdf.addPage(); finalY = 20; }
+    const statutY = sigY - 11;
     pdf.setDrawColor(...boxColor);
     pdf.setFillColor(...(archive ? [228,246,236] : (enCours ? [251,231,231] : [253,246,225])));
-    pdf.roundedRect(margin, statutY, contentW, 10, 2, 2, 'FD');
+    pdf.roundedRect(margin, statutY, contentW, 8, 2, 2, 'FD');
     pdf.setFontSize(8.5);
     pdf.setFont(undefined, 'bold');
     pdf.setTextColor(...(archive ? [0,134,63] : (enCours ? [214,69,69] : [143,100,18])));
-    pdf.text(pdf.splitTextToSize(statutTxt, contentW - 12)[0], margin + 5, statutY + 6.3);
+    pdf.text(pdf.splitTextToSize(statutTxt, contentW - 12)[0], margin + 5, statutY + 5.3);
 
     const sigW = (contentW - 6) / 2;
     const fonction = inv.realiseFonction || 'Responsable';
@@ -4334,9 +4334,9 @@ async function downloadInventairePDF(inventaireId, servanteId){
       pdf.text(sg[0].toUpperCase(), x + 3, sigY + 5, { maxWidth: sigW - 6 });
       pdf.setFont(undefined, 'normal'); pdf.setFontSize(9); pdf.setTextColor(...charcoal);
       pdf.text(sg[1], x + 3, sigY + 12, { maxWidth: sigW - 6 });
-      pdf.text('Date : ____ / ____ / ________', x + 3, sigY + 19);
+      pdf.text('Date : ____ / ____ / ________', x + 3, sigY + 18);
       pdf.setFontSize(7.5); pdf.setTextColor(...steel);
-      pdf.text('Signature :', x + 3, sigY + 26);
+      pdf.text('Signature :', x + 3, sigY + 23.5);
     });
 
     /* Annexe photos */
@@ -4641,6 +4641,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
       <button type="button" class="inv-chip" data-filter="todo">À pointer</button>
       <button type="button" class="inv-chip" data-filter="ecarts">Écarts</button>
     </div>
+    <div id="inv-search-cat" style="display:none;margin:0 0 10px;border:2px solid var(--green);border-radius:10px;background:var(--green-pale,#E4F6EC);padding:8px 12px;"></div>
     <div class="inv-toolbar" style="margin-top:0;">
       <button type="button" class="btn btn-primary btn-sm" id="inv-add-outil">+ Ajouter un outil</button>
       <button type="button" class="btn btn-secondary btn-sm" id="inv-all-ok">✓ Tout le reste est conforme</button>
@@ -4733,11 +4734,36 @@ function openInventaireEditor(servanteId, invId, invData, opts){
       if(show && activeFilter === 'ecarts') show = r.resultat && r.resultat !== 'Conforme';
       row.style.display = show ? '' : 'none';
     });
+    majRechercheCatalogue(q);
     document.querySelectorAll('#inv-list .inv-grp').forEach(h => {
       let el = h.nextElementSibling, visible = false;
       while(el && !el.classList.contains('inv-grp')){ if(el.style.display !== 'none') visible = true; el = el.nextElementSibling; }
       h.style.display = visible ? '' : 'none';
     });
+  }
+  /* Recherche dans le catalogue : les outils qui ne sont pas encore dans cet inventaire sont proposés en un clic. */
+  function majRechercheCatalogue(q){
+    const box = $('#inv-search-cat'); if(!box) return;
+    if(!q || q.length < 2){ box.style.display = 'none'; box.innerHTML = ''; return; }
+    const presents = new Set(state.resultats.map(r => r.outilId).filter(Boolean));
+    const trouves = outilsCache.filter(o => !presents.has(o.id) && [o.designation, o.reference, o.categorie].join(' ').toLowerCase().includes(q))
+                               .sort((a,b)=> String(a.designation).localeCompare(String(b.designation), 'fr', { numeric:true })).slice(0, 8);
+    box.style.display = 'block';
+    box.innerHTML = `<div style="font-weight:700;font-size:13px;margin-bottom:6px;">Dans le catalogue, pas encore dans cet inventaire :</div>` + (trouves.length
+      ? trouves.map(o => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-top:1px solid rgba(0,0,0,.08);">
+          <div><b style="font-size:13.5px;">${escapeHtml(o.designation)}</b> <span style="font-size:12px;color:var(--steel);">${escapeHtml(o.reference||'')} · ${escapeHtml(o.categorie||'')}</span></div>
+          <button type="button" class="btn btn-primary btn-sm" data-ajc="${o.id}">+ Ajouter</button></div>`).join('')
+      : `<div style="font-size:13px;">Aucun outil du catalogue ne correspond. <button type="button" class="btn btn-secondary btn-sm" data-creer-q="1">Créer « ${escapeHtml(q)} » comme nouvel outil</button></div>`);
+  }
+  async function ajouterDepuisCatalogue(outilId){
+    const o = outilsCache.find(x => x.id === outilId); if(!o) return;
+    const q = Math.max(1, o.quantiteStandard || 1);
+    const ligne = { localId: uid(), outilId: o.id, reference: o.reference || '', designation: o.designation, categorie: o.categorie || '',
+                    groupe: "OUTILS AJOUTÉS À LA LISTE", ordre: -1, quantiteAttendue: q, quantiteTrouvee: q, resultat: 'Conforme',
+                    commentaire: '', photoUrl: '', ajoute: true };
+    state.resultats.push(ligne);
+    await flushSave();
+    openInventaireEditor(servanteId, invId, { ...invData, resultats: state.resultats, enTrop: state.enTrop, dateInventaire: dateInputToIso(state.date) }, { focusLocal: ligne.localId });
   }
   function drawTrop(){
     const box = $('#inv-trop-list');
@@ -4932,7 +4958,7 @@ function openInventaireEditor(servanteId, invId, invData, opts){
   });
 
   // --- ajouter un outil à l'inventaire (catalogue ou nouvel outil) : la ligne apparaît tout de suite dans la liste
-  $('#inv-add-outil').addEventListener('click', async ()=>{
+  const ouvrirAjoutOutil = async (prefill) => {
     await flushSave();
     const reouvrir = (focus) => openInventaireEditor(servanteId, invId, { ...invData, resultats: state.resultats, enTrop: state.enTrop, dateInventaire: dateInputToIso(state.date) }, focus ? { focusLocal: focus } : undefined);
     const presents = () => new Set(state.resultats.map(r => r.outilId).filter(Boolean));
@@ -4977,6 +5003,11 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     };
     dessiner();
     document.getElementById('aj-search').addEventListener('input', dessiner);
+    if(prefill){
+      document.getElementById('aj-search').value = prefill; dessiner();
+      const det = document.querySelector('#aj-create').closest('details'); if(det) det.open = true;
+      document.getElementById('aj-des').value = String(prefill).toUpperCase();
+    }
     document.getElementById('aj-results').addEventListener('click', async (ev)=>{
       const b = ev.target.closest('[data-aj]'); if(!b) return;
       const o = outilsCache.find(x => x.id === b.dataset.aj); if(!o) return;
@@ -4999,6 +5030,12 @@ function openInventaireEditor(servanteId, invId, invData, opts){
     });
     document.getElementById('m-close').addEventListener('click', ()=>reouvrir());
     document.getElementById('m-cancel').addEventListener('click', ()=>reouvrir());
+  };
+  $('#inv-add-outil').addEventListener('click', ()=>ouvrirAjoutOutil());
+  $('#inv-search-cat').addEventListener('click', (ev)=>{
+    const b = ev.target.closest('[data-ajc]');
+    if(b){ ajouterDepuisCatalogue(b.dataset.ajc); return; }
+    if(ev.target.closest('[data-creer-q]')) ouvrirAjoutOutil($('#inv-search').value.trim());
   });
 
   // --- scan
