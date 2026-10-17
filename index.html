@@ -4506,6 +4506,13 @@ function openApresClotureModal(servanteId, invId){
 
 function openInventaireEditor(servanteId, invId, invData, opts){
   opts = opts || {};
+  // inventaire créé hors de l'application (import) : on reprend la fonction mémorisée sur cet appareil
+  if(!invData.realiseFonction && invData.realiseParMatricule === currentUser.matricule){
+    try{
+      const memo = localStorage.getItem('sv_fonction_' + currentUser.matricule);
+      if(memo){ invData = { ...invData, realiseFonction: memo }; updateDoc(doc(db,'inventaires',invId), { realiseFonction: memo }).catch(()=>{}); }
+    }catch(e){}
+  }
   const s = servantesCache.find(x=>x.id===servanteId);
   const state = {
     resultats: (invData.resultats||[]).map(r => ({ commentaire:'', photoUrl:'', quantiteAttendue:1, quantiteTrouvee:null, ...r, resultat: r.resultat || null })),
